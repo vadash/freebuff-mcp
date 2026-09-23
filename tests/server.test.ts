@@ -5,7 +5,7 @@ import { readdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
-import { expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type SupervisorProcess } from './helpers/harness.ts';
+import { expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 import type { ChildProcess } from 'node:child_process';
 
 let pipeName = '';
@@ -17,11 +17,11 @@ let supervisorProc: SupervisorProcess | null = null;
 
 type CallResult = { content: Array<{ type: string; text?: string }>; isError?: boolean };
 
-const boot = (mode: string): Client => {
+const boot = (mode: string, extra: Partial<HarnessOptions> = {}): Client => {
   transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--experimental-strip-types', serverEntry],
-    env: plainEnv({ pipeName, mode, settings: { model: 'opus-test' }, ...dirs }),
+    env: plainEnv({ pipeName, mode, settings: { model: 'opus-test' }, ...dirs, ...extra }),
   });
   client = new Client({ name: 'test-client', version: '0.0.0' });
   return client;
@@ -71,8 +71,8 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task two' } })
       .then((r) => completions.push(toolText(r as CallResult)));
     await Promise.all([first, second]);
-    expect(completions).toEqual(['stub(opus-test): task one', 'stub(opus-test): task two']);
-    const status = await pollStatus(pipeName, { state: 'parked', activeModel: 'opus-test', queueDepth: 0 });
+    expect(completions).toEqual(['stub(deepseek/deepseek-v4.1-flash): task one', 'stub(deepseek/deepseek-v4.1-flash): task two']);
+    const status = await pollStatus(pipeName, { state: 'parked', activeModel: 'deepseek/deepseek-v4.1-flash', queueDepth: 0 });
     expect(status.boundDir).toContain('freebuff-sup-task-');
     const chatDirs = readdirSync(chatsRoot(dirs.configDir, dirs.taskDir));
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
@@ -97,6 +97,32 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain(resolve(dirs.taskDir));
   }, 60_000);
+
+  it('cancels the active task and resets the session through the new tools', async () => {
+    const c = boot('slow', { delayMs: 4000 });
+    await c.connect(transport!);
+    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
+    const inFlight = c
+      .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'victim' } })
+      .then(
+        (r) => (r as CallResult).isError === true,
+        () => 'dropped',
+      );
+    await pollStatus(pipeName, { state: 'busy' });
+    const busyReset = (await c.callTool({ name: 'new_session', arguments: {} })) as CallResult;
+    expect(busyReset.isError).toBe(true);
+    expect(busyReset.content[0]!.text).toMatch(/active or queued/i);
+    expect(toolText((await c.callTool({ name: 'cancel_task', arguments: {} })) as CallResult)).toBe('ok');
+    expect(await inFlight).toBe(true);
+    await pollStatus(pipeName, { state: 'idle', queueDepth: 0 });
+    const idleReset = (await c.callTool({ name: 'new_session', arguments: {} })) as CallResult;
+    toolText(idleReset);
+    const next = (await c.callTool({
+      name: 'run_prompt',
+      arguments: { dir: dirs.taskDir, prompt: 'after reset' },
+    })) as CallResult;
+    expect(toolText(next)).toBe('stub(deepseek/deepseek-v4.1-flash): after reset');
+  }, 90_000);
 
   it('survives the MCP client disconnecting and completes the in-flight task', async () => {
     supervisorProc = startSupervisor({
@@ -133,11 +159,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
 
     const second = boot('slow');
     await second.connect(transport!);
-    await pollStatus(pipeName, { state: 'parked', queueDepth: 0, activeModel: 'opus-test' });
+    await pollStatus(pipeName, { state: 'parked', queueDepth: 0, activeModel: 'deepseek/deepseek-v4.1-flash' });
     const status = JSON.parse(
       toolText((await second.callTool({ name: 'status', arguments: {} })) as CallResult),
     ) as Record<string, unknown>;
-    expect(status).toMatchObject({ state: 'parked', queueDepth: 0, activeModel: 'opus-test' });
+    expect(status).toMatchObject({ state: 'parked', queueDepth: 0, activeModel: 'deepseek/deepseek-v4.1-flash' });
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
   }, 60_000);
 });

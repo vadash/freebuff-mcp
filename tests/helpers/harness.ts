@@ -27,6 +27,7 @@ export interface HarnessOptions extends HarnessDirs {
   delayMs?: number;
   taskTimeoutMs?: number;
   settings?: { model: string };
+  modelsFile?: string;
 }
 
 export const makeDirs = (settings?: { model: string }): HarnessDirs => {
@@ -52,6 +53,7 @@ export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
       ...(options.delayMs === undefined ? {} : { FREEBUFF_STUB_DELAY_MS: String(options.delayMs) }),
     },
   }),
+  ...(options.modelsFile === undefined ? {} : { FREEBUFF_MODELS_FILE: options.modelsFile }),
 });
 
 export const plainEnv = (options: HarnessOptions): Record<string, string> =>

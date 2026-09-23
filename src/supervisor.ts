@@ -1,9 +1,9 @@
-import { statSync, readFileSync } from 'node:fs';
+import { statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { QUEUE_DEPTH, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
+import { PASTE_THRESHOLD_BYTES, QUEUE_DEPTH, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
 import { FreebuffDriver } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
@@ -19,6 +19,8 @@ export interface SupervisorConfig {
 export type SupervisorRequest =
   | { op: 'bind'; dir: string }
   | { op: 'run_prompt'; dir: string; prompt: string }
+  | { op: 'cancel_task' }
+  | { op: 'new_session' }
   | { op: 'status' }
   | { op: 'shutdown' };
 
@@ -31,6 +33,7 @@ export type SupervisorResponse =
 
 interface QueuedTask {
   prompt: string;
+  cancelled?: boolean;
   reply: (response: SupervisorResponse) => void;
 }
 
@@ -49,6 +52,7 @@ export class Supervisor {
   private readonly taskTimeoutMs: number;
   private readonly pipeName: string;
   private readonly configDir: string;
+  private tempCounter = 0;
 
   constructor(config: SupervisorConfig = {}) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
@@ -83,6 +87,12 @@ export class Supervisor {
       case 'run_prompt':
         await this.runPrompt(request.dir, request.prompt, reply);
         break;
+      case 'cancel_task':
+        await this.cancelTask(reply);
+        break;
+      case 'new_session':
+        reply(this.newSession());
+        break;
       case 'status':
         reply({
           ok: true,
@@ -104,8 +114,12 @@ export class Supervisor {
   };
 
   private bind(dir: string): SupervisorResponse {
-    if (this.active !== null || this.queue.length > 0) {
-      return { ok: false, error: 'bind rejected: a task is active or queued' };
+    // Issue #5: a rebind is blocked only by an active task; queued tasks are purged.
+    if (this.active !== null) {
+      return { ok: false, error: 'bind rejected: a task is active' };
+    }
+    for (const task of this.queue.splice(0)) {
+      task.reply({ ok: false, error: 'rebind purged this queued task: the directory was rebound' });
     }
     let resolved: string;
     try {
@@ -116,6 +130,26 @@ export class Supervisor {
     }
     this.driver.kill();
     this.boundDir = resolved;
+    this.state = 'idle';
+    return { ok: true };
+  }
+
+  private async cancelTask(reply: (response: SupervisorResponse) => void): Promise<void> {
+    const task = this.active;
+    if (task === null || this.state !== 'busy') {
+      reply({ ok: false, error: 'cancel_task failed: no task is active' });
+      return;
+    }
+    task.cancelled = true;
+    await this.driver.cancelActive();
+    reply({ ok: true });
+  }
+
+  private newSession(): SupervisorResponse {
+    if (this.active !== null || this.queue.length > 0) {
+      return { ok: false, error: 'new_session failed: a task is active or queued' };
+    }
+    this.driver.kill();
     this.state = 'idle';
     return { ok: true };
   }
@@ -160,9 +194,21 @@ export class Supervisor {
   }
 
   private async runOne(task: QueuedTask): Promise<void> {
-    const work = this.driver.runTask(this.boundDir!, task.prompt);
-    work.catch(() => {});
+    let tempFile: string | null = null;
     try {
+      try {
+        this.activeModel = applyModelPolicy(this.configDir);
+      } catch (error) {
+        throw new Error(`model policy failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      let prompt = task.prompt;
+      if (Buffer.byteLength(prompt, 'utf8') > PASTE_THRESHOLD_BYTES) {
+        tempFile = join(this.boundDir!, `.freebuff-task-${++this.tempCounter}.md`);
+        writeFileSync(tempFile, prompt);
+        prompt = `Read the instructions in ${basename(tempFile)} in the current directory and follow them.`;
+      }
+      const work = this.driver.runTask(this.boundDir!, prompt);
+      work.catch(() => {});
       const answer = await withTimeout(work, this.taskTimeoutMs, `task timed out after ${this.taskTimeoutMs}ms`);
       await this.driver.park();
       this.state = 'parked';
@@ -170,8 +216,13 @@ export class Supervisor {
     } catch (error) {
       this.driver.kill();
       this.state = 'idle';
-      task.reply({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      task.reply(
+        task.cancelled
+          ? { ok: false, error: 'task cancelled' }
+          : { ok: false, error: error instanceof Error ? error.message : String(error) },
+      );
     } finally {
+      if (tempFile !== null) rmSync(tempFile, { force: true });
       this.active = null;
       this.pump();
     }
@@ -220,6 +271,19 @@ const readModelSlug = (configDir: string): string | null => {
   } catch {
     return null;
   }
+};
+
+const applyModelPolicy = (configDir: string): string => {
+  const [head] = resolveModelPolicy();
+  let settings: Record<string, unknown> = {};
+  try {
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as Record<string, unknown>;
+  } catch {
+    settings = {};
+  }
+  settings.model = head;
+  writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings, null, 2));
+  return head;
 };
 
 const withTimeout = async <T>(work: Promise<T>, ms: number, message: string): Promise<T> => {

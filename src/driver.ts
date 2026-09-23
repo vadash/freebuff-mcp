@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS } from './config.ts';
+import { ACK_TIMEOUT_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
 import { CHATS_DIRNAME, LOG_FILENAME, MANICODE_DIRNAME, MSG_KEY, PROJECTS_DIRNAME } from './protocol/markers.ts';
@@ -73,6 +73,24 @@ export class FreebuffDriver {
     const session = this.live;
     this.live = null;
     if (session) session.pty.kill();
+  }
+
+  async cancelActive(): Promise<void> {
+    const session = this.live;
+    if (!session || session.exited) {
+      this.kill();
+      return;
+    }
+    session.pty.write('\x1b');
+    await sleep(TYPE_DELAY_MS);
+    session.pty.write('\x03');
+    const deadline = Date.now() + STOP_GRACE_MS;
+    while (Date.now() < deadline) {
+      if (session.exited) break;
+      if (classifyScreen(session.screen.text()).picker !== null) break;
+      await sleep(POLL_MS);
+    }
+    this.kill();
   }
 
   async park(): Promise<void> {

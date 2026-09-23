@@ -59,7 +59,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   const server = new McpServer({ name: 'freebuff-supervisor', version: '0.1.0' });
   server.tool(
     'bind',
-    'Bind freebuff to an existing project directory. Rejected while a task is active or queued.',
+    'Bind freebuff to an existing project directory. Rejected while a task is active; rebinding purges queued tasks.',
     { dir: z.string().describe('Project directory to bind') },
     async ({ dir }) => result(await client.request({ op: 'bind', dir })),
   );
@@ -69,6 +69,18 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
     { dir: z.string().describe('Must equal the bound directory'), prompt: z.string().describe('Task prompt') },
     async ({ dir, prompt }) =>
       result(await client.request({ op: 'run_prompt', dir, prompt }, client.taskTimeoutMs + 30_000)),
+  );
+  server.tool(
+    'cancel_task',
+    'Cancel the active task. The driver is stopped gracefully (ESC then Ctrl-C) and killed if it does not go idle; the next queued task runs afterward.',
+    {},
+    async () => result(await client.request({ op: 'cancel_task' })),
+  );
+  server.tool(
+    'new_session',
+    'Reset the session context. Rejected while a task is active or queued; the next task starts with fresh context.',
+    {},
+    async () => result(await client.request({ op: 'new_session' })),
   );
   server.tool(
     'status',
