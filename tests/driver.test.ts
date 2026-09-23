@@ -7,7 +7,7 @@ import { FreebuffDriver } from '../src/driver.ts';
 
 const stub = fileURLToPath(new URL('./stub-freebuff.mjs', import.meta.url));
 
-const harness = (mode: string, settings?: { model: string }, timeouts?: { readyMs?: number; ackMs?: number }) => {
+const harness = (mode: string, settings?: { freebuffModel: string }, timeouts?: { readyMs?: number; ackMs?: number }) => {
   const configDir = mkdtempSync(join(tmpdir(), 'freebuff-config-'));
   if (settings) writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings));
   const cwd = mkdtempSync(join(tmpdir(), 'freebuff-task-'));
@@ -25,12 +25,12 @@ const harness = (mode: string, settings?: { model: string }, timeouts?: { readyM
 
 describe('FreebuffDriver', () => {
   it('resolves with the exact scripted answer on the collapsed-picker happy path', async () => {
-    const { driver, cwd } = harness('happy', { model: 'opus-test' });
+    const { driver, cwd } = harness('happy', { freebuffModel: 'opus-test' });
     await expect(driver.runTask(cwd, 'hello driver')).resolves.toBe('stub(opus-test): hello driver');
   }, 30_000);
 
   it('retries the submit once, then rejects ack-missing without hanging', async () => {
-    const { driver, cwd } = harness('no-ack', { model: 'opus-test' }, { ackMs: 500 });
+    const { driver, cwd } = harness('no-ack', { freebuffModel: 'opus-test' }, { ackMs: 500 });
     const started = Date.now();
     await expect(driver.runTask(cwd, 'hello driver')).rejects.toMatchObject({ reason: 'ack-missing' });
     expect(Date.now() - started).toBeLessThan(10_000);
@@ -42,18 +42,18 @@ describe('FreebuffDriver', () => {
   }, 30_000);
 
   it('rejects process-exited when the agent dies mid-turn', async () => {
-    const { driver, cwd } = harness('kill-mid-turn', { model: 'opus-test' });
+    const { driver, cwd } = harness('kill-mid-turn', { freebuffModel: 'opus-test' });
     await expect(driver.runTask(cwd, 'hello driver')).rejects.toMatchObject({ reason: 'process-exited' });
   }, 30_000);
 
   it('exposes needsLogin and rejects with needs_login when the TUI demands a login', async () => {
-    const { driver, cwd } = harness('needs-login', { model: 'opus-test' });
+    const { driver, cwd } = harness('needs-login', { freebuffModel: 'opus-test' });
     await expect(driver.runTask(cwd, 'hello driver')).rejects.toMatchObject({ reason: 'needs_login' });
     expect(driver.needsLogin()).toBe(true);
   }, 30_000);
 
   it('serves probe text from the last painted screen after a teardown clear', async () => {
-    const { driver, cwd } = harness('park-clear', { model: 'opus-test' });
+    const { driver, cwd } = harness('park-clear', { freebuffModel: 'opus-test' });
     await driver.runTask(cwd, 'hello driver');
     await driver.park();
     await driver.stop();

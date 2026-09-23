@@ -14,12 +14,12 @@ const snap = (dirName: string, mtimeMs: number, logText: string, logBytes = byte
 const baselineOf = (s: ChatDirSnapshot): TurnBaseline => ({ dirName: s.dirName, logBytes: s.logBytes });
 
 describe('projectKey', () => {
-  it('builds basename--12-char-hash of the resolved cwd', () => {
-    expect(projectKey('demo-app', 'C:/work/demo-app')).toBe('demo-app--a3d7ae616906');
+  it('keys the chat store by the plain basename', () => {
+    expect(projectKey('demo-app', 'C:/work/demo-app')).toBe('demo-app');
   });
 
-  it('distinguishes same-named dirs under different parents', () => {
-    expect(projectKey('demo-app', 'C:/work/demo-app')).not.toBe(projectKey('demo-app', 'D:/elsewhere/demo-app'));
+  it('accepts basename collisions across parents (issue #1)', () => {
+    expect(projectKey('demo-app', 'C:/work/demo-app')).toBe(projectKey('demo-app', 'D:/elsewhere/demo-app'));
   });
 });
 
@@ -94,5 +94,14 @@ describe('detectTurnEnd', () => {
     const text = load('no-completion.jsonl');
     const s = snap('chat-006', 1000, text);
     expect(detectTurnEnd([s], baselineOf(s))).toEqual({ done: false, answer: null });
+  });
+
+  it('scans past a torn non-JSON line before the completion marker', () => {
+    const text =
+      '{"type":"end","role":"agent","shouldEndTurn":true,"data":{"fullResponse":"Kept the answer."}}\n' +
+      '{"msg":"Main prompt finished"  // torn append\n' +
+      '{"msg":"Main prompt finished"}\n';
+    const s = snap('chat-008', 1000, text, 0);
+    expect(detectTurnEnd([s], baselineOf(s))).toEqual({ done: true, answer: 'Kept the answer.' });
   });
 });

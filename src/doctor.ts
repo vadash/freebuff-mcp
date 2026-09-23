@@ -8,12 +8,12 @@ import {
   FULL_RESPONSE_KEY,
   LOG_FILENAME,
   LOGIN_REQUIRED,
-  MANICODE_DIRNAME,
   MSG_KEY,
   PICKER_TITLE,
   PROJECTS_DIRNAME,
   READY_PROMPT,
   SHOULD_END_TURN_KEY,
+  SINGLE_INSTANCE,
   TURN_END_MSG,
 } from './protocol/markers.ts';
 import { flattenScreen } from './protocol/screen.ts';
@@ -34,10 +34,10 @@ const allMarkers = () => ({
   PICKER_TITLE,
   TURN_END_MSG,
   LOGIN_REQUIRED,
+  SINGLE_INSTANCE,
   FULL_RESPONSE_KEY,
   SHOULD_END_TURN_KEY,
   MSG_KEY,
-  MANICODE_DIRNAME,
   PROJECTS_DIRNAME,
   CHATS_DIRNAME,
   LOG_FILENAME,
@@ -48,6 +48,7 @@ const FIXTURE_FOR_MARKER: Record<string, string> = {
   CONNECTING: 'screen/connecting.ansi',
   PICKER_TITLE: 'screen/picker-expanded.ansi',
   LOGIN_REQUIRED: 'screen/login-required.ansi',
+  SINGLE_INSTANCE: 'screen/single-instance.ansi',
   TURN_END_MSG: 'chat/full-turn.jsonl',
   FULL_RESPONSE_KEY: 'chat/full-turn.jsonl',
   SHOULD_END_TURN_KEY: 'chat/full-turn.jsonl',
@@ -56,7 +57,7 @@ const FIXTURE_FOR_MARKER: Record<string, string> = {
 
 const defaultFixtureDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'fixtures');
 
-export const runDoctor = (options: DoctorOptions = {}): DoctorReport => {
+export const runDoctor = async (options: DoctorOptions = {}): Promise<DoctorReport> => {
   const fixtureDir = options.fixtureDir ?? defaultFixtureDir;
   const values = { ...allMarkers(), ...options.markers };
   let signatures: Record<string, string>;
@@ -85,7 +86,7 @@ export const runDoctor = (options: DoctorOptions = {}): DoctorReport => {
       failures.push(`${name}: pinned fixture ${fixture} is missing or unreadable`);
       continue;
     }
-    const content = fixture.endsWith('.ansi') ? flattenScreen([raw]) : raw;
+    const content = fixture.endsWith('.ansi') ? await flattenScreen([raw]) : raw;
     if (!content.includes(value)) failures.push(`${name}: pinned fixture ${fixture} does not contain the marker`);
   }
   return { ok: failures.length === 0, failures };

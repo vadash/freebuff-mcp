@@ -1,7 +1,7 @@
-import { statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { FREEZE_THRESHOLD_MINUTES, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, QUEUE_DEPTH, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
 import { FreebuffDriver } from './driver.ts';
@@ -55,9 +55,20 @@ interface QueuedTask {
 const FROZEN = Symbol('frozen');
 
 export const defaultDriverOptions = (): DriverOptions => ({
-  executable: 'freebuff',
-  configDir: join(homedir(), '.freebuff'),
+  ...resolveFreebuffCommand(),
+  configDir: join(homedir(), '.config', 'manicode'),
 });
+
+const resolveFreebuffCommand = (): { executable: string; argsPrefix: string[] } => {
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue;
+    if (existsSync(join(dir, 'freebuff.exe'))) return { executable: join(dir, 'freebuff.exe'), argsPrefix: [] };
+    if (existsSync(join(dir, 'freebuff.cmd'))) {
+      return { executable: process.execPath, argsPrefix: [join(dir, 'node_modules', 'freebuff', 'index.js')] };
+    }
+  }
+  return { executable: 'freebuff', argsPrefix: [] };
+};
 
 export class Supervisor {
   private state: SupervisorState = 'idle';
@@ -133,7 +144,7 @@ export class Supervisor {
         break;
       }
       case 'doctor':
-        reply({ ok: true, failures: runDoctor().failures });
+        reply({ ok: true, failures: (await runDoctor()).failures });
         break;
       case 'shutdown':
         this.driver.kill();
@@ -360,8 +371,8 @@ export class Supervisor {
 
 const readModelSlug = (configDir: string): string | null => {
   try {
-    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as { model?: unknown };
-    return typeof settings.model === 'string' ? settings.model : null;
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as { freebuffModel?: unknown };
+    return typeof settings.freebuffModel === 'string' ? settings.freebuffModel : null;
   } catch {
     return null;
   }
@@ -375,7 +386,8 @@ const applyModelPolicy = (configDir: string): string => {
   } catch {
     settings = {};
   }
-  settings.model = head;
+  settings.freebuffModel = head;
+  mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings, null, 2));
   return head;
 };

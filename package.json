@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@xterm/headless": "^6.0.0",
     "node-pty": "^1.0.0"
   },
   "devDependencies": {

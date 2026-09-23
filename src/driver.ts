@@ -1,20 +1,21 @@
+// PTY driver adapted from Praket7/freebuff-mcp (MIT).
 /// <reference lib="es2024" />
 import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS } from './config.ts';
-import { byNewest, detectTurnEnd, hasLineSince, newestChatDir, projectKey } from './protocol/chatStore.ts';
+import { ACK_TIMEOUT_MS, PICKER_REENTER_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS } from './config.ts';
+import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, MANICODE_DIRNAME, MSG_KEY, PROJECTS_DIRNAME } from './protocol/markers.ts';
+import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 
 export type DriverFailureReason = 'ready-timeout' | 'dir-mismatch' | 'ack-missing' | 'process-exited' | 'lock_held' | 'needs_login';
 
 export class FreebuffDriverError extends Error {
   readonly reason: DriverFailureReason;
-  constructor(reason: DriverFailureReason) {
-    super(`freebuff driver failure: ${reason}`);
+  constructor(reason: DriverFailureReason, detail?: string) {
+    super(`freebuff driver failure: ${reason}${detail ? `: ${detail}` : ''}`);
     this.name = 'FreebuffDriverError';
     this.reason = reason;
   }
@@ -102,7 +103,7 @@ export class FreebuffDriver {
     const running = /freebuff\s+v(\S+)/i.exec(text);
     let onDiskVersion: string | null = null;
     try {
-      const meta = JSON.parse(readFileSync(join(this.options.configDir, 'update.json'), 'utf8')) as { version?: unknown };
+      const meta = JSON.parse(readFileSync(join(this.options.configDir, 'freebuff-metadata.json'), 'utf8')) as { version?: unknown };
       if (typeof meta.version === 'string') onDiskVersion = meta.version;
     } catch {
       onDiskVersion = null;
@@ -165,7 +166,7 @@ export class FreebuffDriver {
     while (Date.now() < deadline) {
       if (session.exited) throw new FreebuffDriverError('process-exited');
       const text = session.screen.text();
-      if (text !== stale && classifyScreen(text).picker !== null) return;
+      if (text !== stale && !text.includes(READY_PROMPT) && classifyScreen(text).picker !== null) return;
       await sleep(POLL_MS);
     }
     throw new FreebuffDriverError('ready-timeout');
@@ -174,7 +175,6 @@ export class FreebuffDriver {
   private chatsRoot(cwd: string): string {
     return join(
       this.options.configDir,
-      MANICODE_DIRNAME,
       PROJECTS_DIRNAME,
       projectKey(cwd, resolve(cwd)),
       CHATS_DIRNAME,
@@ -234,14 +234,23 @@ export class FreebuffDriver {
   }
 
   private claimLock(): void {
-    let pid: number;
-    try {
-      pid = Number.parseInt(readFileSync(join(this.options.configDir, 'freebuff.lock'), 'utf8').trim(), 10);
-    } catch {
-      return;
+    // The real app records the live instance in freebuff-instance-owner.json; the stub and
+    // older builds use freebuff.lock. Dead pids never block startup.
+    for (const name of ['freebuff-instance-owner.json', 'freebuff.lock']) {
+      let pid: number | null = null;
+      try {
+        const raw: unknown = JSON.parse(readFileSync(join(this.options.configDir, name), 'utf8').trim());
+        if (name.endsWith('.json') && typeof raw === 'object' && raw !== null && 'pid' in raw && typeof raw.pid === 'number') {
+          pid = raw.pid;
+        } else if (!name.endsWith('.json')) {
+          pid = Number.parseInt(String(raw), 10) || null;
+        }
+      } catch {
+        continue;
+      }
+      if (pid !== null && Number.isFinite(pid) && pidAlive(pid)) throw new FreebuffDriverError('lock_held');
+      rmSync(join(this.options.configDir, name), { force: true });
     }
-    if (pidAlive(pid)) throw new FreebuffDriverError('lock_held');
-    rmSync(join(this.options.configDir, 'freebuff.lock'), { force: true });
   }
 
   private spawn(cwd: string): IPty {
@@ -261,7 +270,7 @@ export class FreebuffDriver {
 
   private async waitReady(pty: IPty, screen: CliTerminalScreen, assertAlive: () => void, cwd: string): Promise<void> {
     const deadline = Date.now() + this.readyMs;
-    let dismissed = false;
+    let lastPickerEnterAt = 0;
     while (Date.now() < deadline) {
       assertAlive();
       const text = screen.text();
@@ -269,18 +278,25 @@ export class FreebuffDriver {
         this.loginRequired = true;
         throw new FreebuffDriverError('needs_login');
       }
-      const verdict = classifyScreen(text, cwd);
-      if (verdict.picker === 'expanded' && !dismissed) {
+      if (text.includes(SINGLE_INSTANCE) && Date.now() - lastPickerEnterAt > PICKER_REENTER_MS) {
         pty.write('\r');
-        dismissed = true;
-      } else if (verdict.ready) {
+        lastPickerEnterAt = Date.now();
+        await sleep(POLL_MS);
+        continue;
+      }
+      const verdict = classifyScreen(text, cwd);
+      if (verdict.ready) {
         if (verdict.banner === null) throw new FreebuffDriverError('dir-mismatch');
         this.loginRequired = false;
         return;
       }
+      if (verdict.picker !== null && Date.now() - lastPickerEnterAt > PICKER_REENTER_MS) {
+        pty.write('\r');
+        lastPickerEnterAt = Date.now();
+      }
       await sleep(POLL_MS);
     }
-    throw new FreebuffDriverError('ready-timeout');
+    throw new FreebuffDriverError('ready-timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));
   }
 
   private async typePrompt(pty: IPty, prompt: string): Promise<void> {
@@ -328,7 +344,7 @@ export class FreebuffDriver {
     const base = snaps.find((s) => s.dirName === baseline.dirName);
     for (const snap of snaps) {
       if (base !== undefined && snap !== base && byNewest(snap, base) > 0) continue;
-      if (hasLineSince(snap, snap === base ? baseline.logBytes : 0, (json) => json[MSG_KEY] === prompt)) return true;
+      if (hasLineSince(snap, snap === base ? baseline.logBytes : 0, (json) => lineMentionsPrompt(json, prompt))) return true;
     }
     return false;
   }

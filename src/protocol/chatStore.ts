@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { FULL_RESPONSE_KEY, MSG_KEY, SHOULD_END_TURN_KEY, TURN_END_MSG } from './markers.ts';
 
-export function projectKey(cwd: string, resolvedCwd: string): string {
-  return `${basename(cwd)}--${createHash('sha256').update(resolvedCwd).digest('hex').slice(0, 12)}`;
+// Issue #1: basename-key collisions are accepted; the real app keys chats by plain basename.
+export function projectKey(cwd: string, _resolvedCwd: string): string {
+  return basename(cwd);
 }
 
 export type ChatDirSnapshot = { dirName: string; mtimeMs: number; logBytes: number; logText: string };
@@ -50,17 +50,30 @@ export function hasLineSince(snap: ChatDirSnapshot, fromBytes: number, test: (js
   return false;
 }
 
+// Ack shapes seen in the wild: the stub logs the prompt as the msg field; the real app
+// nests it under data.prompt on the agent start/end lines.
+export function lineMentionsPrompt(json: Record<string, unknown>, prompt: string): boolean {
+  if (json[MSG_KEY] === prompt) return true;
+  const data = typeof json.data === 'object' && json.data !== null ? (json.data as Record<string, unknown>) : null;
+  return data?.prompt === prompt;
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+
 function completionAt(lines: JsonLine[], i: number): TurnCompletion {
   for (let j = i - 1; j >= 0; j--) {
     const prev = lines[j].json;
-    if (prev && prev[SHOULD_END_TURN_KEY] === true) {
-      const data = prev.data;
-      const answer =
-        data !== null && typeof data === 'object' && typeof (data as Record<string, unknown>)[FULL_RESPONSE_KEY] === 'string'
-          ? ((data as Record<string, unknown>)[FULL_RESPONSE_KEY] as string)
+    if (prev === null) continue;
+    const data = asRecord(prev.data);
+    if (prev[SHOULD_END_TURN_KEY] !== true && data?.[SHOULD_END_TURN_KEY] !== true) continue;
+    const answer =
+      typeof data?.[FULL_RESPONSE_KEY] === 'string'
+        ? data[FULL_RESPONSE_KEY]
+        : typeof prev[FULL_RESPONSE_KEY] === 'string'
+          ? prev[FULL_RESPONSE_KEY]
           : null;
-      return { done: true, answer };
-    }
+    return { done: true, answer };
   }
   return { done: true, answer: null };
 }

@@ -24,14 +24,15 @@ export interface HarnessDirs {
 export interface HarnessOptions extends HarnessDirs {
   pipeName: string;
   mode: string;
+  realDriver?: boolean;
   delayMs?: number;
   taskTimeoutMs?: number;
   freezeMs?: number;
-  settings?: { model: string };
+  settings?: { freebuffModel: string };
   modelsFile?: string;
 }
 
-export const makeDirs = (settings?: { model: string }): HarnessDirs => {
+export const makeDirs = (settings?: { freebuffModel: string }): HarnessDirs => {
   const configDir = mkdtempSync(join(tmpdir(), 'freebuff-sup-config-'));
   if (settings) writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings));
   return {
@@ -46,15 +47,19 @@ export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
   FREEBUFF_SUPERVISOR_PIPE: options.pipeName,
   FREEBUFF_TASK_TIMEOUT_MS: String(options.taskTimeoutMs ?? 20 * 60_000),
   ...(options.freezeMs === undefined ? {} : { FREEBUFF_FREEZE_THRESHOLD_MS: String(options.freezeMs) }),
-  FREEBUFF_DRIVER_JSON: JSON.stringify({
-    executable: process.execPath,
-    argsPrefix: [stubPath],
-    configDir: options.configDir,
-    env: {
-      FREEBUFF_STUB_MODE: options.mode,
-      ...(options.delayMs === undefined ? {} : { FREEBUFF_STUB_DELAY_MS: String(options.delayMs) }),
-    },
-  }),
+  ...(options.realDriver
+    ? {}
+    : {
+        FREEBUFF_DRIVER_JSON: JSON.stringify({
+          executable: process.execPath,
+          argsPrefix: [stubPath],
+          configDir: options.configDir,
+          env: {
+            FREEBUFF_STUB_MODE: options.mode,
+            ...(options.delayMs === undefined ? {} : { FREEBUFF_STUB_DELAY_MS: String(options.delayMs) }),
+          },
+        }),
+      }),
   ...(options.modelsFile === undefined ? {} : { FREEBUFF_MODELS_FILE: options.modelsFile }),
 });
 

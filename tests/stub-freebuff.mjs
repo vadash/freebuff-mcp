@@ -2,13 +2,12 @@
 // a dependency-free .mjs: the marker strings and the projectKey hash below
 // duplicate src/protocol/{markers,chatStore}.ts on purpose so the driver under
 // test is the only side consuming the real modules.
-import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, join } from 'node:path';
 
 const READY_PROMPT = 'Enter a coding task or / for commands';
 const CONNECTING = 'Connecting';
-const PICKER_TITLE = 'Select a model';
+const PICKER_TITLE = 'Start coding for free';
 const TURN_END_MSG = 'Main prompt finished';
 const MSG_KEY = 'msg';
 const SHOULD_END_TURN_KEY = 'shouldEndTurn';
@@ -24,12 +23,12 @@ const mode = process.env.FREEBUFF_STUB_MODE ?? 'happy';
 const configDir = process.env.FREEBUFF_CONFIG_DIR;
 const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
 
-const LOGIN_REQUIRED = 'Login required';
+const LOGIN_REQUIRED = 'Not authenticated';
 const bannerLine = `freebuff v${version}`;
 const trialLine = 'Trial: 432 min left';
 const dailyLine = 'Daily Freebucks: 25/25';
 
-const projectKey = `${basename(cwd)}--${createHash('sha256').update(resolve(cwd)).digest('hex').slice(0, 12)}`;
+const projectKey = basename(cwd);
 
 // The real TUI holds a pid lock for its lifetime and leaves it behind on a crash;
 // the supervisor claims stale locks via pid liveness before spawning.
@@ -39,7 +38,7 @@ let settings = null;
 try {
   settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
 } catch {}
-const model = typeof settings?.model === 'string' ? settings.model : 'none';
+const model = typeof settings?.freebuffModel === 'string' ? settings.freebuffModel : 'none';
 
 let phase = 'picker';
 let pending = '';
@@ -47,7 +46,7 @@ let chatCounter = 0;
 let newChatRequested = false;
 let lastLogPath = null;
 
-const chatsRoot = () => join(configDir, 'manicode', 'projects', projectKey, 'chats');
+const chatsRoot = () => join(configDir, 'projects', projectKey, 'chats');
 
 const chatsExist = () => {
   try {

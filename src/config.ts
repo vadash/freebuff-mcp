@@ -6,6 +6,7 @@ export const READY_TIMEOUT_MS = 120_000;
 export const ACK_TIMEOUT_MS = 20_000;
 export const PASTE_THRESHOLD_BYTES = 64 * 1024;
 export const STOP_GRACE_MS = 2_000;
+export const PICKER_REENTER_MS = 3_000;
 export const FREEZE_THRESHOLD_MINUTES = 10;
 export const MAX_TASK_RESPAWNS = 2;
 export const PARK_IMMEDIATELY_AFTER_TASK = true;
@@ -13,7 +14,7 @@ export const SCREEN_ROWS = 48;
 export const SCREEN_COLS = 160;
 export const SUPERVISOR_PIPE = '\\\\.\\pipe\\freebuff-supervisor';
 
-export const DEFAULT_MODELS = ['deepseek/deepseek-v4.1-flash', 'mimo/mimo-v2.5', 'z-ai/glm-5.3-flash'];
+export const DEFAULT_MODELS = ['z-ai/glm-5.3-flash', 'mimo/mimo-v2.5', 'deepseek/deepseek-v4.1-flash'];
 
 const MODEL_SLUG = /^\S+\/\S+$/;
 
