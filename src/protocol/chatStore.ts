@@ -12,7 +12,7 @@ export type TurnCompletion = { done: boolean; answer: string | null };
 
 type JsonLine = { start: number; byteStart: number; json: Record<string, unknown> | null };
 
-const byNewest = (a: ChatDirSnapshot, b: ChatDirSnapshot): number =>
+export const byNewest = (a: ChatDirSnapshot, b: ChatDirSnapshot): number =>
   b.mtimeMs - a.mtimeMs || (a.dirName < b.dirName ? 1 : a.dirName > b.dirName ? -1 : 0);
 
 // Lazy flushes split lines mid-write: a trailing fragment without a newline is
@@ -41,6 +41,13 @@ function logLines(text: string): JsonLine[] {
 
 export function newestChatDir(dirs: ChatDirSnapshot[]): ChatDirSnapshot | null {
   return dirs.length === 0 ? null : dirs.reduce((newest, d) => (byNewest(d, newest) < 0 ? d : newest));
+}
+
+export function hasLineSince(snap: ChatDirSnapshot, fromBytes: number, test: (json: Record<string, unknown>) => boolean): boolean {
+  for (const { byteStart, json } of logLines(snap.logText)) {
+    if (byteStart >= fromBytes && json !== null && test(json)) return true;
+  }
+  return false;
 }
 
 function completionAt(lines: JsonLine[], i: number): TurnCompletion {
