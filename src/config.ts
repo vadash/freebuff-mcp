@@ -7,3 +7,4 @@ export const FREEZE_THRESHOLD_MINUTES = 30;
 export const PARK_IMMEDIATELY_AFTER_TASK = true;
 export const SCREEN_ROWS = 48;
 export const SCREEN_COLS = 160;
+export const SUPERVISOR_PIPE = '\\\\.\\pipe\\freebuff-supervisor';

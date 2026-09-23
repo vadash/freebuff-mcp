@@ -43,6 +43,8 @@ const submit = async (prompt) => {
   if (!prompt || mode === 'no-ack') return;
   if (prompt === '/end-session') {
     if (lastLogPath) appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: 'end-session' }) + '\n');
+    out(CLEAR + cwd + '\r\n' + PICKER_TITLE + '\r\n> large-model\r\n  small-model\r\n');
+    phase = 'picker';
     return;
   }
   if (prompt === '/new') {
@@ -56,6 +58,7 @@ const submit = async (prompt) => {
   lastLogPath = join(dir, 'log.jsonl');
   const answer = `stub(${model}): ${prompt}`;
   await sleep(30 + Math.random() * 50);
+  if (mode === 'slow') await sleep(Number(process.env.FREEBUFF_STUB_DELAY_MS ?? 5000));
   appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: prompt }) + '\n');
   if (mode === 'kill-mid-turn') {
     setTimeout(() => process.exit(9), 100);
@@ -71,9 +74,12 @@ const submit = async (prompt) => {
 };
 
 process.stdin.setEncoding('utf8');
+process.stdin.on('end', () => process.exit(0));
 process.stdin.on('data', (chunk) => {
   for (const char of chunk) {
-    if (char === '\r' || char === '\n') {
+    // ConPTY line input turns one written CR into CR LF; the real TUI reads raw
+    // keys, so LF must not count as a second Enter.
+    if (char === '\r') {
       if (phase === 'picker') {
         phase = 'ready';
         out(CLEAR + cwd + '\r\n' + READY_PROMPT + '\r\n');
@@ -82,7 +88,7 @@ process.stdin.on('data', (chunk) => {
         pending = '';
         void submit(prompt);
       }
-    } else {
+    } else if (char !== '\n') {
       pending += char;
     }
   }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { detectTurnEnd, newestChatDir, projectKey } from '../src/protocol/chatStore.js';
-import type { ChatDirSnapshot, TurnBaseline } from '../src/protocol/chatStore.js';
+import { detectTurnEnd, newestChatDir, projectKey } from '../src/protocol/chatStore.ts';
+import type { ChatDirSnapshot, TurnBaseline } from '../src/protocol/chatStore.ts';
 
 const dir = new URL('./fixtures/chat/', import.meta.url);
 const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');

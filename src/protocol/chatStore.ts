@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
-import { FULL_RESPONSE_KEY, MSG_KEY, SHOULD_END_TURN_KEY, TURN_END_MSG } from './markers.js';
+import { FULL_RESPONSE_KEY, MSG_KEY, SHOULD_END_TURN_KEY, TURN_END_MSG } from './markers.ts';
 
 export function projectKey(cwd: string, resolvedCwd: string): string {
   return `${basename(cwd)}--${createHash('sha256').update(resolvedCwd).digest('hex').slice(0, 12)}`;

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { FreebuffDriver } from '../src/driver.js';
+import { FreebuffDriver } from '../src/driver.ts';
 
 const stub = fileURLToPath(new URL('./stub-freebuff.mjs', import.meta.url));
 

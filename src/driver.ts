@@ -3,18 +3,20 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS } from './config.js';
-import { byNewest, detectTurnEnd, hasLineSince, newestChatDir, projectKey } from './protocol/chatStore.js';
-import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.js';
-import { CHATS_DIRNAME, LOG_FILENAME, MANICODE_DIRNAME, MSG_KEY, PROJECTS_DIRNAME } from './protocol/markers.js';
-import { CliTerminalScreen, classifyScreen } from './protocol/screen.js';
+import { ACK_TIMEOUT_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS } from './config.ts';
+import { byNewest, detectTurnEnd, hasLineSince, newestChatDir, projectKey } from './protocol/chatStore.ts';
+import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
+import { CHATS_DIRNAME, LOG_FILENAME, MANICODE_DIRNAME, MSG_KEY, PROJECTS_DIRNAME } from './protocol/markers.ts';
+import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 
 export type DriverFailureReason = 'ready-timeout' | 'dir-mismatch' | 'ack-missing' | 'process-exited';
 
 export class FreebuffDriverError extends Error {
-  constructor(readonly reason: DriverFailureReason) {
+  readonly reason: DriverFailureReason;
+  constructor(reason: DriverFailureReason) {
     super(`freebuff driver failure: ${reason}`);
     this.name = 'FreebuffDriverError';
+    this.reason = reason;
   }
 }
 
@@ -24,10 +26,14 @@ export interface DriverOptions {
   argsPrefix?: string[];
   timeouts?: { readyMs?: number; ackMs?: number };
   env?: Record<string, string>;
+  keepAlive?: boolean;
+  onReady?: () => void;
 }
 
 const POLL_MS = 250;
 const TYPE_DELAY_MS = 150;
+// /new has no log-line echo, so wait for the TUI to swallow it before typing the task.
+const NEW_SETTLE_MS = 300;
 
 const sleep = (ms: number): Promise<void> => {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -40,13 +46,50 @@ const turnBaseline = (snaps: ChatDirSnapshot[]): TurnBaseline => {
   return newest ? { dirName: newest.dirName, logBytes: newest.logBytes } : { dirName: '', logBytes: 0 };
 };
 
+interface LiveSession {
+  pty: IPty;
+  screen: CliTerminalScreen;
+  exited: boolean;
+  cwd: string;
+}
+
 export class FreebuffDriver {
   private readonly readyMs: number;
   private readonly ackMs: number;
+  private readonly options: DriverOptions;
+  private live: LiveSession | null = null;
 
-  constructor(private readonly options: DriverOptions) {
+  constructor(options: DriverOptions) {
+    this.options = options;
     this.readyMs = options.timeouts?.readyMs ?? READY_TIMEOUT_MS;
     this.ackMs = options.timeouts?.ackMs ?? ACK_TIMEOUT_MS;
+  }
+
+  isAlive(): boolean {
+    return this.live !== null && !this.live.exited;
+  }
+
+  kill(): void {
+    const session = this.live;
+    this.live = null;
+    if (session) session.pty.kill();
+  }
+
+  async park(): Promise<void> {
+    const session = this.live;
+    if (!session || session.exited) return;
+    const stale = session.screen.text();
+    session.pty.write('/end-session');
+    await sleep(TYPE_DELAY_MS);
+    session.pty.write('\r');
+    const deadline = Date.now() + this.readyMs;
+    while (Date.now() < deadline) {
+      if (session.exited) throw new FreebuffDriverError('process-exited');
+      const text = session.screen.text();
+      if (text !== stale && classifyScreen(text).picker !== null) return;
+      await sleep(POLL_MS);
+    }
+    throw new FreebuffDriverError('ready-timeout');
   }
 
   async runTask(cwd: string, prompt: string): Promise<string> {
@@ -57,28 +100,48 @@ export class FreebuffDriver {
       projectKey(cwd, resolve(cwd)),
       CHATS_DIRNAME,
     );
-    const pty = this.spawn(cwd);
-    const screen = new CliTerminalScreen();
-    let exited = false;
-    pty.onData((chunk) => screen.write(chunk));
-    pty.onExit(() => {
-      exited = true;
-    });
+    const session = this.acquire(cwd);
+    const pty = session.pty;
     const assertAlive = (): void => {
-      if (exited) throw new FreebuffDriverError('process-exited');
+      if (session.exited) throw new FreebuffDriverError('process-exited');
     };
     try {
-      await this.waitReady(pty, screen, assertAlive, cwd);
+      await this.waitReady(pty, session.screen, assertAlive, cwd);
+      this.options.onReady?.();
       const baseline = turnBaseline(this.snapshot(chatsRoot));
+      if (this.options.keepAlive) {
+        await this.typePrompt(pty, '/new');
+        await sleep(NEW_SETTLE_MS);
+      }
       await this.typePrompt(pty, prompt);
       if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) {
         await this.typePrompt(pty, prompt);
         if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack-missing');
       }
       return await this.awaitTurnEnd(chatsRoot, baseline, assertAlive);
+    } catch (error) {
+      if (this.options.keepAlive) this.kill();
+      throw error;
     } finally {
-      pty.kill();
+      if (!this.options.keepAlive) pty.kill();
     }
+  }
+
+  private acquire(cwd: string): LiveSession {
+    if (this.options.keepAlive && this.isAlive()) {
+      const session = this.live!;
+      if (session.cwd !== cwd) throw new FreebuffDriverError('dir-mismatch');
+      return session;
+    }
+    const pty = this.spawn(cwd);
+    const screen = new CliTerminalScreen();
+    const session: LiveSession = { pty, screen, exited: false, cwd };
+    pty.onData((chunk) => screen.write(chunk));
+    pty.onExit(() => {
+      session.exited = true;
+    });
+    if (this.options.keepAlive) this.live = session;
+    return session;
   }
 
   private spawn(cwd: string): IPty {

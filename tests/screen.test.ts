@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { classifyScreen, flattenScreen } from '../src/protocol/screen.js';
+import { classifyScreen, flattenScreen } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
 const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');

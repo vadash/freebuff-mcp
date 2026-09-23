@@ -1,7 +1,7 @@
 // Screen state machine vendored from Praket7/freebuff-mcp (MIT).
 // ponytail: readiness relies on these VT controls; add xterm-headless if the CLI adopts others.
-import { SCREEN_COLS, SCREEN_ROWS } from '../config.js';
-import { CONNECTING, PICKER_TITLE, READY_PROMPT } from './markers.js';
+import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
+import { CONNECTING, PICKER_TITLE, READY_PROMPT } from './markers.ts';
 
 /** Minimal VT screen state for readiness checks; raw PTY history is not the visible screen. */
 export class CliTerminalScreen {
