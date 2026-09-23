@@ -3,9 +3,11 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PASTE_THRESHOLD_BYTES, QUEUE_DEPTH, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
+import { FREEZE_THRESHOLD_MINUTES, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, QUEUE_DEPTH, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
 import { FreebuffDriver } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
+import { FreebuffDriverError } from './driver.ts';
+import { runDoctor } from './doctor.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 
 export type SupervisorState = 'idle' | 'spawning' | 'busy' | 'parked';
@@ -14,6 +16,7 @@ export interface SupervisorConfig {
   pipeName?: string;
   driver?: DriverOptions;
   taskTimeoutMs?: number;
+  freezeThresholdMs?: number;
 }
 
 export type SupervisorRequest =
@@ -22,20 +25,34 @@ export type SupervisorRequest =
   | { op: 'cancel_task' }
   | { op: 'new_session' }
   | { op: 'status' }
+  | { op: 'doctor' }
   | { op: 'shutdown' };
 
 export type SupervisorResponse =
   | { ok: true }
   | { ok: true; answer: string }
-  | { ok: true; state: SupervisorState; boundDir: string | null; queueDepth: number; activeModel: string | null }
+  | {
+      ok: true;
+      state: SupervisorState;
+      boundDir: string | null;
+      queueDepth: number;
+      activeModel: string | null;
+      trialMinutesLeft: number | null;
+      freebucksDaily: string | null;
+      needsLogin: boolean;
+      updatePending: { running: string; onDisk: string } | null;
+    }
   | { ok: false; error: string }
-  | { ok: false; busy: true; position: number; error: string };
+  | { ok: false; busy: true; position: number; error: string }
+  | { ok: true; failures: string[] };
 
 interface QueuedTask {
   prompt: string;
   cancelled?: boolean;
   reply: (response: SupervisorResponse) => void;
 }
+
+const FROZEN = Symbol('frozen');
 
 export const defaultDriverOptions = (): DriverOptions => ({
   executable: 'freebuff',
@@ -50,6 +67,7 @@ export class Supervisor {
   private activeModel: string | null = null;
   private readonly driver: FreebuffDriver;
   private readonly taskTimeoutMs: number;
+  private readonly freezeMs: number;
   private readonly pipeName: string;
   private readonly configDir: string;
   private tempCounter = 0;
@@ -57,6 +75,7 @@ export class Supervisor {
   constructor(config: SupervisorConfig = {}) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
+    this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MINUTES * 60_000;
     this.configDir = config.driver?.configDir ?? defaultDriverOptions().configDir;
     this.driver = new FreebuffDriver({
       ...(config.driver ?? defaultDriverOptions()),
@@ -93,14 +112,28 @@ export class Supervisor {
       case 'new_session':
         reply(this.newSession());
         break;
-      case 'status':
+      case 'status': {
+        const probe = this.driver.probe();
         reply({
           ok: true,
           state: this.state,
           boundDir: this.boundDir,
           queueDepth: this.queue.length,
           activeModel: this.activeModel,
+          trialMinutesLeft: probe.trialMinutesLeft,
+          freebucksDaily: probe.freebucksDaily,
+          needsLogin: this.driver.needsLogin(),
+          updatePending:
+            probe.runningVersion !== null &&
+            probe.onDiskVersion !== null &&
+            versionNewer(probe.onDiskVersion, probe.runningVersion)
+              ? { running: probe.runningVersion, onDisk: probe.onDiskVersion }
+              : null,
         });
+        break;
+      }
+      case 'doctor':
+        reply({ ok: true, failures: runDoctor().failures });
         break;
       case 'shutdown':
         this.driver.kill();
@@ -193,6 +226,69 @@ export class Supervisor {
     void this.runOne(task);
   }
 
+  private async supervised(task: QueuedTask, prompt: string): Promise<string> {
+    let respawns = 0;
+    for (;;) {
+      const work = this.driver.runTask(this.boundDir!, prompt);
+      work.catch(() => {});
+      const freeze = this.watchFreeze(task);
+      let answer: string | typeof FROZEN;
+      try {
+        answer = await Promise.race([
+          withTimeout(work, this.taskTimeoutMs, `task timed out after ${this.taskTimeoutMs}ms`),
+          freeze.promise,
+        ]);
+      } catch (error) {
+        const crash = error instanceof FreebuffDriverError && error.reason === 'process-exited' && !task.cancelled;
+        if (!crash) throw error;
+        if (respawns >= MAX_TASK_RESPAWNS) throw new Error('freebuff driver crashed: respawn limit reached');
+        respawns += 1;
+        await this.respawnDriver();
+        continue;
+      } finally {
+        freeze.stop();
+      }
+      if (answer !== FROZEN) return answer;
+      if (task.cancelled) throw new Error('task cancelled');
+      if (respawns >= MAX_TASK_RESPAWNS) throw new Error('freebuff driver crashed: respawn limit reached');
+      respawns += 1;
+      await this.respawnDriver();
+    }
+  }
+
+  private watchFreeze(task: QueuedTask): { promise: Promise<typeof FROZEN>; stop(): void } {
+    const dir = this.boundDir!;
+    let lastLog = this.driver.newestLogSize(dir);
+    let lastScreen = this.driver.screenText();
+    let lastChange = Date.now();
+    const { promise, resolve } = Promise.withResolvers<typeof FROZEN>();
+    const timer = setInterval(() => {
+      if (this.active !== task || task.cancelled) {
+        clearInterval(timer);
+        return;
+      }
+      const log = this.driver.newestLogSize(dir);
+      const screen = this.driver.screenText();
+      if (log !== lastLog || screen !== lastScreen) {
+        lastLog = log;
+        lastScreen = screen;
+        lastChange = Date.now();
+        return;
+      }
+      if (Date.now() - lastChange >= this.freezeMs) {
+        clearInterval(timer);
+        resolve(FROZEN);
+      }
+    }, Math.min(1_000, Math.max(50, Math.floor(this.freezeMs / 4))));
+    return { promise, stop: () => clearInterval(timer) };
+  }
+
+  private async respawnDriver(): Promise<void> {
+    this.state = 'spawning';
+    await this.driver.stop();
+    applyModelPolicy(this.configDir);
+  }
+
   private async runOne(task: QueuedTask): Promise<void> {
     let tempFile: string | null = null;
     try {
@@ -207,9 +303,7 @@ export class Supervisor {
         writeFileSync(tempFile, prompt);
         prompt = `Read the instructions in ${basename(tempFile)} in the current directory and follow them.`;
       }
-      const work = this.driver.runTask(this.boundDir!, prompt);
-      work.catch(() => {});
-      const answer = await withTimeout(work, this.taskTimeoutMs, `task timed out after ${this.taskTimeoutMs}ms`);
+      const answer = await this.supervised(task, prompt);
       await this.driver.park();
       this.state = 'parked';
       task.reply({ ok: true, answer });
@@ -296,6 +390,16 @@ const withTimeout = async <T>(work: Promise<T>, ms: number, message: string): Pr
   }
 };
 
+const versionNewer = (candidate: string, current: string): boolean => {
+  const a = candidate.split('.').map(Number);
+  const b = current.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const delta = (a[i] ?? 0) - (b[i] ?? 0);
+    if (delta !== 0) return delta > 0;
+  }
+  return false;
+};
+
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 
 if (isMain) {
@@ -304,9 +408,10 @@ if (isMain) {
     ? (JSON.parse(process.env.FREEBUFF_DRIVER_JSON) as DriverOptions)
     : defaultDriverOptions();
   const taskTimeoutMs = Number(process.env.FREEBUFF_TASK_TIMEOUT_MS) || TASK_TIMEOUT_MS;
+  const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MINUTES * 60_000;
   const main = async (): Promise<void> => {
     if (await pipeReachable(pipeName, 250)) process.exit(0);
-    const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs });
+    const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs });
     try {
       await supervisor.listen();
     } catch (error) {

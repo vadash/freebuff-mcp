@@ -166,4 +166,14 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(status).toMatchObject({ state: 'parked', queueDepth: 0, activeModel: 'deepseek/deepseek-v4.1-flash' });
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
   }, 60_000);
+
+  it('runs the doctor protocol check through the supervisor op', async () => {
+    const c = boot('happy');
+    await c.connect(transport!);
+    const report = JSON.parse(toolText((await c.callTool({ name: 'doctor', arguments: {} })) as CallResult)) as {
+      ok: boolean;
+      failures: string[];
+    };
+    expect(report).toEqual({ ok: true, failures: [] });
+  }, 30_000);
 });

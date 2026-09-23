@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
 import { chmodSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, join, resolve } from 'node:path';
@@ -387,5 +388,129 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/timed out/i);
     await pollStatus(pipeName, { state: 'idle', queueDepth: 0 });
+  }, 30_000);
+
+  it('respawns after a mid-turn crash, re-runs the task, and keeps the queue going', async () => {
+    boot('kill-mid-turn');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const first = requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'first task' },
+      60_000,
+    );
+    const second = requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second task' },
+      60_000,
+    );
+    await pollStatus(pipeName, { queueDepth: 1 });
+    await expect(first).resolves.toMatchObject({ ok: true, answer: 'stub(deepseek/deepseek-v4.1-flash): first task' });
+    await expect(second).resolves.toMatchObject({ ok: true, answer: 'stub(deepseek/deepseek-v4.1-flash): second task' });
+  }, 90_000);
+
+  it('fails a task with reason crashed once respawns are exhausted', async () => {
+    boot('kill-always');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const doomed = await requestPipe<{ ok: boolean; error?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'doomed' },
+      60_000,
+    );
+    expect(doomed.ok).toBe(false);
+    expect(doomed.error).toMatch(/crashed/);
+    await pollStatus(pipeName, { state: 'idle', queueDepth: 0 });
+  }, 60_000);
+
+  it('restarts a frozen driver instead of timing out and the task still completes', async () => {
+    proc = startSupervisor({
+      pipeName,
+      mode: 'freeze',
+      freezeMs: 1200,
+      taskTimeoutMs: 20_000,
+      settings: { model: 'opus-test' },
+      ...dirs,
+    });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const started = Date.now();
+    const done = await requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'thaw' },
+      60_000,
+    );
+    expect(done).toMatchObject({ ok: true, answer: 'stub(deepseek/deepseek-v4.1-flash): thaw' });
+    expect(Date.now() - started).toBeLessThan(30_000);
+    const root = chatsRoot(dirs.taskDir);
+    const logs = readdirSync(root).map((dir) => readFileSync(join(root, dir, 'log.jsonl'), 'utf8'));
+    expect(logs.join('\n').split('"msg":"thaw"').length - 1).toBeGreaterThanOrEqual(2);
+  }, 90_000);
+
+  it('claims a stale pid lock and refuses to spawn while the lock holder lives', async () => {
+    const lockPath = join(dirs.configDir, 'freebuff.lock');
+    writeFileSync(lockPath, String(process.pid));
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const held = await requestPipe<{ ok: boolean; error?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'blocked' },
+      30_000,
+    );
+    expect(held.ok).toBe(false);
+    expect(held.error).toMatch(/lock_held/);
+    const dead = spawn(process.execPath, ['-e', '']);
+    const gone = Promise.withResolvers<void>();
+    dead.once('exit', () => gone.resolve());
+    await gone.promise;
+    writeFileSync(lockPath, String(dead.pid));
+    const done = await requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'stale ok' },
+      60_000,
+    );
+    expect(done).toMatchObject({ ok: true, answer: 'stub(deepseek/deepseek-v4.1-flash): stale ok' });
+  }, 60_000);
+
+  it('reports trial, freebucks, and update fields on status', async () => {
+    writeFileSync(join(dirs.configDir, 'update.json'), JSON.stringify({ version: '0.0.190' }));
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
+    const before = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(before).toMatchObject({ trialMinutesLeft: null, freebucksDaily: null, needsLogin: false, updatePending: null });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'status fields' },
+      30_000,
+    );
+    await pollStatus(pipeName, { state: 'parked' });
+    const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(status).toMatchObject({
+      trialMinutesLeft: 432,
+      freebucksDaily: '25/25',
+      needsLogin: false,
+      updatePending: { running: '0.0.186', onDisk: '0.0.190' },
+    });
+    writeFileSync(join(dirs.configDir, 'update.json'), JSON.stringify({ version: '0.0.100' }));
+    const stale = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(stale).toMatchObject({ updatePending: null });
+  }, 60_000);
+
+  it('flags needs_login and never respawns it', async () => {
+    boot('needs-login');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const failed = await requestPipe<{ ok: boolean; error?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'hello' },
+      30_000,
+    );
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toMatch(/needs_login/);
+    await pollStatus(pipeName, { needsLogin: true, state: 'idle', queueDepth: 0 });
+    const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(status).toMatchObject({ trialMinutesLeft: null, freebucksDaily: null });
   }, 30_000);
 });

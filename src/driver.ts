@@ -1,15 +1,15 @@
 /// <reference lib="es2024" />
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, LOG_FILENAME, MANICODE_DIRNAME, MSG_KEY, PROJECTS_DIRNAME } from './protocol/markers.ts';
+import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, MANICODE_DIRNAME, MSG_KEY, PROJECTS_DIRNAME } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 
-export type DriverFailureReason = 'ready-timeout' | 'dir-mismatch' | 'ack-missing' | 'process-exited';
+export type DriverFailureReason = 'ready-timeout' | 'dir-mismatch' | 'ack-missing' | 'process-exited' | 'lock_held' | 'needs_login';
 
 export class FreebuffDriverError extends Error {
   readonly reason: DriverFailureReason;
@@ -41,6 +41,15 @@ const sleep = (ms: number): Promise<void> => {
   return promise;
 };
 
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
 const turnBaseline = (snaps: ChatDirSnapshot[]): TurnBaseline => {
   const newest = newestChatDir(snaps);
   return newest ? { dirName: newest.dirName, logBytes: newest.logBytes } : { dirName: '', logBytes: 0 };
@@ -58,6 +67,8 @@ export class FreebuffDriver {
   private readonly ackMs: number;
   private readonly options: DriverOptions;
   private live: LiveSession | null = null;
+  private lastPainted = '';
+  private loginRequired = false;
 
   constructor(options: DriverOptions) {
     this.options = options;
@@ -69,10 +80,60 @@ export class FreebuffDriver {
     return this.live !== null && !this.live.exited;
   }
 
+  screenText(): string {
+    const text = this.live?.screen.text() ?? '';
+    if (text.trim() !== '') return text;
+    return this.lastPainted;
+  }
+
+  needsLogin(): boolean {
+    return this.loginRequired;
+  }
+
+  probe(): {
+    trialMinutesLeft: number | null;
+    freebucksDaily: string | null;
+    runningVersion: string | null;
+    onDiskVersion: string | null;
+  } {
+    const text = this.screenText();
+    const trial = /(\d+)\s*min\s+left/i.exec(text);
+    const daily = /Daily\s+Freebucks:\s*(\S+)/i.exec(text);
+    const running = /freebuff\s+v(\S+)/i.exec(text);
+    let onDiskVersion: string | null = null;
+    try {
+      const meta = JSON.parse(readFileSync(join(this.options.configDir, 'update.json'), 'utf8')) as { version?: unknown };
+      if (typeof meta.version === 'string') onDiskVersion = meta.version;
+    } catch {
+      onDiskVersion = null;
+    }
+    return {
+      trialMinutesLeft: trial === null ? null : Number(trial[1]),
+      freebucksDaily: daily === null ? null : daily[1],
+      runningVersion: running === null ? null : running[1],
+      onDiskVersion,
+    };
+  }
+
+  newestLogSize(cwd: string): number {
+    const snaps = this.snapshot(this.chatsRoot(cwd));
+    return snaps.reduce<ChatDirSnapshot | null>(
+      (newest, snap) => (newest === null || byNewest(snap, newest) > 0 ? snap : newest),
+      null,
+    )?.logBytes ?? 0;
+  }
+
   kill(): void {
     const session = this.live;
     this.live = null;
     if (session) session.pty.kill();
+  }
+
+  async stop(timeoutMs = 5_000): Promise<void> {
+    const session = this.live;
+    this.kill();
+    const deadline = Date.now() + timeoutMs;
+    while (session && !session.exited && Date.now() < deadline) await sleep(50);
   }
 
   async cancelActive(): Promise<void> {
@@ -110,14 +171,18 @@ export class FreebuffDriver {
     throw new FreebuffDriverError('ready-timeout');
   }
 
-  async runTask(cwd: string, prompt: string): Promise<string> {
-    const chatsRoot = join(
+  private chatsRoot(cwd: string): string {
+    return join(
       this.options.configDir,
       MANICODE_DIRNAME,
       PROJECTS_DIRNAME,
       projectKey(cwd, resolve(cwd)),
       CHATS_DIRNAME,
     );
+  }
+
+  async runTask(cwd: string, prompt: string): Promise<string> {
+    const chatsRoot = this.chatsRoot(cwd);
     const session = this.acquire(cwd);
     const pty = session.pty;
     const assertAlive = (): void => {
@@ -151,15 +216,32 @@ export class FreebuffDriver {
       if (session.cwd !== cwd) throw new FreebuffDriverError('dir-mismatch');
       return session;
     }
+    this.claimLock();
     const pty = this.spawn(cwd);
     const screen = new CliTerminalScreen();
+    this.lastPainted = '';
     const session: LiveSession = { pty, screen, exited: false, cwd };
-    pty.onData((chunk) => screen.write(chunk));
+    pty.onData((chunk) => {
+      screen.write(chunk);
+      const painted = screen.text();
+      if (painted.trim() !== '') this.lastPainted = painted;
+    });
     pty.onExit(() => {
       session.exited = true;
     });
     if (this.options.keepAlive) this.live = session;
     return session;
+  }
+
+  private claimLock(): void {
+    let pid: number;
+    try {
+      pid = Number.parseInt(readFileSync(join(this.options.configDir, 'freebuff.lock'), 'utf8').trim(), 10);
+    } catch {
+      return;
+    }
+    if (pidAlive(pid)) throw new FreebuffDriverError('lock_held');
+    rmSync(join(this.options.configDir, 'freebuff.lock'), { force: true });
   }
 
   private spawn(cwd: string): IPty {
@@ -182,12 +264,18 @@ export class FreebuffDriver {
     let dismissed = false;
     while (Date.now() < deadline) {
       assertAlive();
-      const verdict = classifyScreen(screen.text(), cwd);
+      const text = screen.text();
+      if (text.includes(LOGIN_REQUIRED)) {
+        this.loginRequired = true;
+        throw new FreebuffDriverError('needs_login');
+      }
+      const verdict = classifyScreen(text, cwd);
       if (verdict.picker === 'expanded' && !dismissed) {
         pty.write('\r');
         dismissed = true;
       } else if (verdict.ready) {
         if (verdict.banner === null) throw new FreebuffDriverError('dir-mismatch');
+        this.loginRequired = false;
         return;
       }
       await sleep(POLL_MS);

@@ -26,6 +26,7 @@ export interface HarnessOptions extends HarnessDirs {
   mode: string;
   delayMs?: number;
   taskTimeoutMs?: number;
+  freezeMs?: number;
   settings?: { model: string };
   modelsFile?: string;
 }
@@ -44,6 +45,7 @@ export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
   ...process.env,
   FREEBUFF_SUPERVISOR_PIPE: options.pipeName,
   FREEBUFF_TASK_TIMEOUT_MS: String(options.taskTimeoutMs ?? 20 * 60_000),
+  ...(options.freezeMs === undefined ? {} : { FREEBUFF_FREEZE_THRESHOLD_MS: String(options.freezeMs) }),
   FREEBUFF_DRIVER_JSON: JSON.stringify({
     executable: process.execPath,
     argsPrefix: [stubPath],

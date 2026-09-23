@@ -4,6 +4,7 @@ export const READY_PROMPT = 'Enter a coding task or / for commands';
 export const CONNECTING = 'Connecting';
 export const PICKER_TITLE = 'Select a model';
 export const TURN_END_MSG = 'Main prompt finished';
+export const LOGIN_REQUIRED = 'Login required';
 
 export const FULL_RESPONSE_KEY = 'fullResponse';
 export const SHOULD_END_TURN_KEY = 'shouldEndTurn';

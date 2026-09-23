@@ -45,4 +45,18 @@ describe('FreebuffDriver', () => {
     const { driver, cwd } = harness('kill-mid-turn', { model: 'opus-test' });
     await expect(driver.runTask(cwd, 'hello driver')).rejects.toMatchObject({ reason: 'process-exited' });
   }, 30_000);
+
+  it('exposes needsLogin and rejects with needs_login when the TUI demands a login', async () => {
+    const { driver, cwd } = harness('needs-login', { model: 'opus-test' });
+    await expect(driver.runTask(cwd, 'hello driver')).rejects.toMatchObject({ reason: 'needs_login' });
+    expect(driver.needsLogin()).toBe(true);
+  }, 30_000);
+
+  it('serves probe text from the last painted screen after a teardown clear', async () => {
+    const { driver, cwd } = harness('park-clear', { model: 'opus-test' });
+    await driver.runTask(cwd, 'hello driver');
+    await driver.park();
+    await driver.stop();
+    expect(driver.screenText()).toContain('Trial: 432 min left');
+  }, 30_000);
 });

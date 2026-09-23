@@ -3,7 +3,7 @@
 // duplicate src/protocol/{markers,chatStore}.ts on purpose so the driver under
 // test is the only side consuming the real modules.
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 const READY_PROMPT = 'Enter a coding task or / for commands';
@@ -22,8 +22,18 @@ const args = process.argv.slice(2);
 const cwd = args[args.indexOf('--cwd') + 1];
 const mode = process.env.FREEBUFF_STUB_MODE ?? 'happy';
 const configDir = process.env.FREEBUFF_CONFIG_DIR;
+const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
+
+const LOGIN_REQUIRED = 'Login required';
+const bannerLine = `freebuff v${version}`;
+const trialLine = 'Trial: 432 min left';
+const dailyLine = 'Daily Freebucks: 25/25';
 
 const projectKey = `${basename(cwd)}--${createHash('sha256').update(resolve(cwd)).digest('hex').slice(0, 12)}`;
+
+// The real TUI holds a pid lock for its lifetime and leaves it behind on a crash;
+// the supervisor claims stale locks via pid liveness before spawning.
+writeFileSync(join(configDir, 'freebuff.lock'), String(process.pid));
 
 let settings = null;
 try {
@@ -39,12 +49,26 @@ let lastLogPath = null;
 
 const chatsRoot = () => join(configDir, 'manicode', 'projects', projectKey, 'chats');
 
+const chatsExist = () => {
+  try {
+    return readdirSync(chatsRoot()).length > 0;
+  } catch {
+    return false;
+  }
+};
+
 const submit = async (prompt) => {
   if (!prompt || mode === 'no-ack') return;
   if (prompt === '/end-session') {
     if (lastLogPath) appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: 'end-session' }) + '\n');
-    out(CLEAR + cwd + '\r\n' + PICKER_TITLE + '\r\n> large-model\r\n  small-model\r\n');
+    out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n' + PICKER_TITLE + '\r\n> large-model\r\n  small-model\r\n' + trialLine + '\r\n' + dailyLine + '\r\n');
     phase = 'picker';
+    if (mode === 'park-clear') {
+      setTimeout(() => {
+        out(CLEAR);
+        process.exit(0);
+      }, 1200);
+    }
     return;
   }
   if (prompt === '/new') {
@@ -53,6 +77,8 @@ const submit = async (prompt) => {
   }
   const dirName = newChatRequested ? `chat-new-${chatCounter++}` : `chat-${chatCounter++}`;
   newChatRequested = false;
+  const crashThisTurn = mode === 'kill-always' || (mode === 'kill-mid-turn' && !chatsExist());
+  const freezeThisTurn = mode === 'freeze' && !chatsExist();
   const dir = join(chatsRoot(), dirName);
   mkdirSync(dir, { recursive: true });
   lastLogPath = join(dir, 'log.jsonl');
@@ -60,9 +86,12 @@ const submit = async (prompt) => {
   await sleep(30 + Math.random() * 50);
   if (mode === 'slow') await sleep(Number(process.env.FREEBUFF_STUB_DELAY_MS ?? 5000));
   appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: prompt }) + '\n');
-  if (mode === 'kill-mid-turn') {
+  if (crashThisTurn) {
     setTimeout(() => process.exit(9), 100);
     return;
+  }
+  if (freezeThisTurn) {
+    for (;;) await sleep(1_000);
   }
   await sleep(30 + Math.random() * 50);
   appendFileSync(
@@ -82,7 +111,7 @@ process.stdin.on('data', (chunk) => {
     if (char === '\r') {
       if (phase === 'picker') {
         phase = 'ready';
-        out(CLEAR + cwd + '\r\n' + READY_PROMPT + '\r\n');
+        out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n' + READY_PROMPT + '\r\n' + trialLine + '\r\n' + dailyLine + '\r\n');
       } else {
         const prompt = pending;
         pending = '';
@@ -97,13 +126,17 @@ process.stdin.on('data', (chunk) => {
 await sleep(80);
 out(CONNECTING + ' to agent...\r\n');
 await sleep(80);
-out(CLEAR + cwd + '\r\n');
+out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
 await sleep(80);
+if (mode === 'needs-login') {
+  out(LOGIN_REQUIRED + '\r\n');
+  for (;;) await sleep(1_000);
+}
 out(PICKER_TITLE + '\r\n');
 if (model === 'none') {
-  out('> large-model\r\n  small-model\r\n');
+  out('> large-model\r\n  small-model\r\n' + trialLine + '\r\n' + dailyLine + '\r\n');
 } else {
   out(model + '\r\n');
   phase = 'ready';
-  out(READY_PROMPT + '\r\n');
+  out(READY_PROMPT + '\r\n' + trialLine + '\r\n' + dailyLine + '\r\n');
 }

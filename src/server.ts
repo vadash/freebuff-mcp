@@ -88,6 +88,12 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
     {},
     async () => result(await client.request({ op: 'status' })),
   );
+  server.tool(
+    'doctor',
+    'Verify terminal markers against pinned fixtures and committed protocol signatures.',
+    {},
+    async () => result(await client.request({ op: 'doctor' })),
+  );
   return server;
 };
 
@@ -100,8 +106,18 @@ interface ToolContent {
 const result = (response: SupervisorResponse): ToolContent => {
   if (response.ok && 'answer' in response) return { content: [{ type: 'text', text: response.answer }] };
   if (response.ok && 'state' in response) {
-    const { state, boundDir, queueDepth, activeModel } = response;
-    return { content: [{ type: 'text', text: JSON.stringify({ state, boundDir, queueDepth, activeModel }) }] };
+    const { state, boundDir, queueDepth, activeModel, trialMinutesLeft, freebucksDaily, needsLogin, updatePending } = response;
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ state, boundDir, queueDepth, activeModel, trialMinutesLeft, freebucksDaily, needsLogin, updatePending }),
+        },
+      ],
+    };
+  }
+  if (response.ok && 'failures' in response) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: response.failures.length === 0, failures: response.failures }) }] };
   }
   if (response.ok) return { content: [{ type: 'text', text: 'ok' }] };
   if ('busy' in response) {
