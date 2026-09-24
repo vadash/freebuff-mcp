@@ -116,6 +116,9 @@ const projectKey = basename(cwd);
 // the supervisor claims stale locks via pid liveness before spawning.
 writeFileSync(join(configDir, 'freebuff.lock'), String(process.pid));
 
+// Opt-in: tests learn the pid of the process that spawned the Instance (the supervisor).
+if (process.env.FREEBUFF_STUB_PARENT_PID_FILE) writeFileSync(process.env.FREEBUFF_STUB_PARENT_PID_FILE, String(process.ppid));
+
 // The displayed model is keyboard-driven: the picker cursor names it (issue #13), never
 // settings.json. Without FREEBUFF_STUB_PICKER the replayed fixture keeps the real TUI's
 // remembered-model cursor, and a pick lands on that row.

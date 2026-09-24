@@ -124,6 +124,14 @@ npm test
 npm run typecheck
 ```
 
+`scripts/flashwatch.ps1` runs a command and reports every console window it
+flashes on the desktop, with the process chain behind each (`-Trace` also logs
+every process it starts). `npm test` should flash none:
+
+```
+pwsh -NoProfile -File scripts/flashwatch.ps1 npm test
+```
+
 ## Credits
 
 Terminal automation adapted from

@@ -1,5 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,10 +67,11 @@ export const plainEnv = (options: HarnessOptions): Record<string, string> =>
   );
 
 export const startSupervisor = (options: HarnessOptions): ChildProcess => {
+  // Not detached: a console-less supervisor makes Windows open a console window for
+  // every console program it starts. Tests need no daemon; it shares this console.
   const proc = spawn(process.execPath, ['--experimental-strip-types', supervisorEntry], {
     env: childEnv(options),
     stdio: 'inherit',
-    detached: true,
   });
   proc.unref();
   return proc;
@@ -99,6 +101,20 @@ export const expectExit = async (proc: ChildProcess, timeoutMs = 5_000): Promise
   const timer = setTimeout(resolve, timeoutMs);
   await promise;
   clearTimeout(timer);
+};
+
+// node-pty forks this agent on every pty.kill(): it attaches to a pid's console and
+// lists the processes sharing it, and fails to attach when the pid has no console.
+const consoleListAgent = createRequire(import.meta.url).resolve('node-pty/lib/conpty_console_list_agent');
+
+/** The pids attached to `pid`'s console, or null when `pid` has no console at all. */
+export const consoleProcessList = (pid: number): Promise<number[] | null> => {
+  const { promise, resolve } = Promise.withResolvers<number[] | null>();
+  const agent = fork(consoleListAgent, [String(pid)], { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  agent.once('message', (message) => resolve((message as { consoleProcessList: number[] }).consoleProcessList));
+  agent.once('disconnect', () => resolve(null));
+  agent.once('error', () => resolve(null));
+  return promise;
 };
 
 export const answerOf = (result: { content: Array<{ type: string; text?: string }>; isError?: boolean }): string => {

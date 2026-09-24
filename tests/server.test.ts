@@ -1,10 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
-import { expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 import type { ChildProcess } from 'node:child_process';
 
 let pipeName = '';
@@ -184,5 +184,19 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       failures: string[];
     };
     expect(report).toEqual({ ok: true, failures: [] });
+  }, 30_000);
+
+  it('starts the supervisor with a console, so programs it starts open no console window', async () => {
+    const parentPidFile = join(dirs.otherDir, 'instance-parent.pid');
+    const c = boot('happy', { stubEnv: { FREEBUFF_STUB_PARENT_PID_FILE: parentPidFile } });
+    await c.connect(transport!);
+    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
+    await pollStatus(pipeName, { state: 'picker' });
+    const supervisorPid = Number(readFileSync(parentPidFile, 'utf8'));
+    // A console-less supervisor makes Windows open a new console window for every
+    // console program it starts: node-pty's agent on each pty.kill(), taskkill.
+    expect(await consoleProcessList(supervisorPid), 'the supervisor has no console').toEqual(
+      expect.arrayContaining([supervisorPid]),
+    );
   }, 30_000);
 });

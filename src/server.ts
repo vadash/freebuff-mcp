@@ -40,15 +40,21 @@ export class SupervisorClient {
   async ensureStarted(): Promise<void> {
     if (await pipeReachable(this.options.pipeName, PIPE_PROBE_TIMEOUT_MS)) return;
     if (!this.spawnIfMissing) throw new Error(`no supervisor is listening on ${this.options.pipeName}`);
-    const child = spawn(process.execPath, ['--experimental-strip-types', supervisorEntry], {
+    // Not `detached`: that leaves the supervisor with no console, so Windows opens a
+    // console window for every console program it starts (node-pty's agent on each
+    // pty.kill(), taskkill). `start /b` under a hidden cmd hands it cmd's hidden console;
+    // Node kills cmd with us, but not what cmd started, so the supervisor outlives us.
+    const command = `start "" /b "${process.execPath}" --experimental-strip-types "${supervisorEntry}"`;
+    const child = spawn('cmd.exe', ['/d', '/s', '/c', `"${command}"`], {
       env: {
         ...process.env,
         FREEBUFF_SUPERVISOR_PIPE: this.options.pipeName,
         FREEBUFF_TASK_TIMEOUT_MS: String(this.options.taskTimeoutMs),
         FREEBUFF_DRIVER_JSON: JSON.stringify(this.options.driver),
       },
-      detached: true,
       stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
     });
     child.unref();
     await waitForPipe(this.options.pipeName, READY_TIMEOUT_MS);

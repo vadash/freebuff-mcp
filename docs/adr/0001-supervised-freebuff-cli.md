@@ -24,7 +24,9 @@ final answer back, and it restarts often.
 ### 1. Architecture: thin MCP proxy, long-lived supervisor
 
 - `src/server.ts` is a stdio MCP server that only forwards tool calls. It
-  starts the supervisor on demand (detached) if none is listening.
+  starts the supervisor on demand if none is listening, through `start /b`
+  under a hidden cmd: the supervisor outlives the server and owns a hidden
+  console, which everything it starts inherits.
 - `src/supervisor.ts` is a daemon that owns the single freebuff **Instance**,
   the task **Queue**, and the watchdog. It outlives harness restarts, so
   closing the harness never kills a running task or the Hour session.
@@ -117,7 +119,10 @@ relied on that setting. The rule is hardcoded for v1 and easy to reverse.
 - `cancel_task` kills the Instance instead of confirming it went idle.
 - No backup turn-end signal (transcript mtime). A finished turn with no
   `fullResponse` fails the task with `no_answer`.
-- No visible console window: the Instance runs headless in ConPTY.
+- No visible console window: the Instance runs headless in ConPTY, and the
+  supervisor's hidden console keeps the helpers it starts (node-pty's kill
+  agent, `taskkill`) from opening one each. A detached, console-less
+  supervisor flashed a window for every one of them.
 
 ## Consequences
 
