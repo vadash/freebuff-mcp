@@ -97,6 +97,17 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(result.content[0]!.text).toContain(resolve(dirs.taskDir));
   }, 60_000);
 
+  it('surfaces the bind lock as an MCP error naming the bound directory', async () => {
+    const c = boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
+    await c.connect(transport!);
+    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 45 });
+    const locked = (await c.callTool({ name: 'bind', arguments: { dir: dirs.otherDir } })) as CallResult;
+    expect(locked.isError).toBe(true);
+    expect(locked.content[0]!.text).toMatch(/bound_dir_locked/);
+    expect(locked.content[0]!.text).toContain(resolve(dirs.taskDir));
+  }, 60_000);
+
   it('cancels the active task and resets the session through the new tools', async () => {
     const c = boot('slow', { delayMs: 4000 });
     await c.connect(transport!);

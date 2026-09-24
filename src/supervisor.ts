@@ -58,6 +58,10 @@ interface QueuedTask {
 
 const FROZEN = Symbol('frozen');
 
+// Issue #14: switching directories abandons an Hour session with more than this
+// much time left on it; the supervisor refuses until the window narrows.
+const BIND_LOCK_GRACE_MINUTES = 30;
+
 export class Supervisor {
   private state: SupervisorState = 'stopped';
   private boundDir: string | null = null;
@@ -147,9 +151,6 @@ export class Supervisor {
       reply({ ok: false, kind: 'error', error: 'bind rejected: a task is active' });
       return;
     }
-    for (const task of this.queue.splice(0)) {
-      task.reply({ ok: false, kind: 'error', error: 'rebind purged this queued task: the directory was rebound' });
-    }
     let resolved: string;
     try {
       resolved = resolve(dir);
@@ -157,6 +158,25 @@ export class Supervisor {
     } catch {
       reply({ ok: false, kind: 'error', error: `bind failed: ${dir} is not an existing directory` });
       return;
+    }
+    if (resolved === this.boundDir && this.driver.isAlive()) {
+      reply({ ok: true, kind: 'ok' });
+      return;
+    }
+    if (this.boundDir !== null && resolved !== this.boundDir) {
+      const minutesLeft = this.driver.probe().hourSessionMinutesLeft;
+      if (minutesLeft !== null && minutesLeft > BIND_LOCK_GRACE_MINUTES) {
+        const unlocksInMinutes = minutesLeft - BIND_LOCK_GRACE_MINUTES;
+        reply({
+          ok: false,
+          kind: 'error',
+          error: `bind rejected: bound_dir_locked: ${this.boundDir} unlocks in ${unlocksInMinutes} minutes; restart the supervisor to switch now`,
+        });
+        return;
+      }
+    }
+    for (const task of this.queue.splice(0)) {
+      task.reply({ ok: false, kind: 'error', error: 'rebind purged this queued task: the directory was rebound' });
     }
     this.driver.kill();
     this.boundDir = resolved;

@@ -44,7 +44,7 @@ freebuff instance survives it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. |
+| `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. Same directory is a no-op. The Bind lock refuses a switch while more than 30 minutes of the Hour session remain. |
 | `run_prompt` | `dir`, `prompt` | Queues the prompt and waits for freebuff's final answer. `dir` must equal the bound directory. Prompts over 64 KB are written to a file in that directory and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
 | `new_session` | none | Starts a fresh conversation. Refused while a task is active or queued. |
@@ -67,7 +67,7 @@ freebuff instance survives it.
 ### Failures
 
 Failed calls return `isError: true` with a message. Driver failures read
-`freebuff driver failure: <reason>`:
+`freebuff driver failure: <reason>`; bind rejections read `bind rejected: <reason>`:
 
 | Reason | Meaning |
 |---|---|
@@ -77,6 +77,7 @@ Failed calls return `isError: true` with a message. Driver failures read
 | `ready_timeout` | freebuff never reached its input box (includes a screen excerpt). |
 | `ack_missing` | freebuff did not record the prompt, even after one retry. |
 | `process_exited` | freebuff exited; the watchdog respawns it and resends the prompt, up to 2 times. |
+| `bound_dir_locked` | Switching to a different directory is refused while more than 30 minutes of the Hour session remain. The message carries the Bound directory and the minutes until it unlocks. The escape hatch is restarting the supervisor (the Bound directory is not persisted). Re-binding the same directory is a no-op; with no Hour session running, or 30 minutes or less left, switching is allowed. |
 
 A full queue returns `{ "busy": true, "position": N }`, currently not flagged
 as an error.
@@ -106,8 +107,6 @@ Tracked against ADR-0001; fixes are being planned.
   a respawn resends the prompt.
 - **`doctor` does not look at the live screen.** It only compares the code's
   constants with committed fixtures, so it cannot detect a freebuff update.
-- **No bind lock.** A caller can
-  switch directories and burn a new Hour session.
 
 ## Real smoke test
 

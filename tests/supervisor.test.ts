@@ -98,16 +98,18 @@ describe('supervisor daemon (named-pipe protocol)', () => {
   }, 90_000);
 
   it('respawns into the unexpired Hour session at ready after a kill', async () => {
+    // ADR-0001 §5: the bind lock only guards a different directory; a
+    // same-directory rebind is an unconditional success, so respawning a dead
+    // Instance in the same dir resumes the wall-clock Hour session.
     boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1' } });
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    await pollStatus(pipeName, { state: 'ready' });
-    const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
-    expect(status).toMatchObject({ hourSessionMinutesLeft: 432 });
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' })).ok).toBe(true);
-    await pollStatus(pipeName, { state: 'stopped' });
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 432 });
+    const stubPid = Number.parseInt(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8').trim(), 10);
+    spawn('taskkill', ['/PID', String(stubPid), '/T', '/F']);
+    await pollStatus(pipeName, { state: 'stopped', hourSessionMinutesLeft: 432 });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 432, queueDepth: 0 });
   }, 60_000);
 
   it('leaves the continue screen alone while idle and presses enter for the next task', async () => {
@@ -128,10 +130,11 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 60_000);
 
-  it('rebind accepts a new directory once idle and the next task runs against the new state', async () => {
-    boot('happy');
+  it('rebind accepts a new directory once 30 minutes or less remain and the next task runs against the new state', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '30' } });
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 30 });
     const before = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'before' },
@@ -140,7 +143,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(before.ok).toBe(true);
     const rebound = await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir });
     expect(rebound.ok).toBe(true);
-    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.otherDir) });
+    await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.otherDir) });
     const after = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.otherDir, prompt: 'after' },
@@ -149,6 +152,66 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(after.ok).toBe(true);
     await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'ready', queueDepth: 0 });
     expect(readdirSync(chatsRoot(dirs.otherDir)).length).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+
+  it('locks bind to a different directory while more than 30 minutes of the Hour session remain', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 45 });
+    const locked = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.otherDir });
+    expect(locked.ok).toBe(false);
+    expect(locked.error).toMatch(/bound_dir_locked/);
+    expect(locked.error).toContain(resolve(dirs.taskDir));
+    expect(locked.error).toMatch(/unlocks in 15 minutes/);
+    await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
+  }, 60_000);
+
+  it('locks bind to a different directory while the Hour session outlives a dead idle Instance', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 45 });
+    // ADR-0001 §5: the Hour session is wall-clock and survives Instance death; the
+    // last painted screen still shows the countdown after an idle crash.
+    const stubPid = Number.parseInt(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8').trim(), 10);
+    spawn('taskkill', ['/PID', String(stubPid), '/T', '/F']);
+    await pollStatus(pipeName, { state: 'stopped', hourSessionMinutesLeft: 45 });
+    const locked = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.otherDir });
+    expect(locked.ok).toBe(false);
+    expect(locked.error).toMatch(/bound_dir_locked/);
+    expect(locked.error).toMatch(/unlocks in 15 minutes/);
+    await pollStatus(pipeName, { state: 'stopped', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
+  }, 60_000);
+
+  it('allows switching directories once 30 minutes or less of the Hour session remain', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '30' } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 30 });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.otherDir) });
+  }, 60_000);
+
+  it('allows switching directories while no Hour session is running', async () => {
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker', hourSessionMinutesLeft: null });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.otherDir) });
+  }, 60_000);
+
+  it('treats a same-directory rebind as a no-op without respawning', async () => {
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker' });
+    const lockBefore = readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8');
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await sleep(1200);
+    expect(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8')).toBe(lockBefore);
+    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
   }, 60_000);
 
   it('replies with an error for unknown ops and malformed json lines', async () => {
@@ -161,7 +224,13 @@ describe('supervisor daemon (named-pipe protocol)', () => {
   }, 30_000);
 
   it('rejects bind only while a task is active and rebinds once the queue drains', async () => {
-    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2000, ...dirs });
+    proc = startSupervisor({
+      pipeName,
+      mode: 'slow',
+      delayMs: 2000,
+      ...dirs,
+      stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '30' },
+    });
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const task = requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'long task' }, 30_000);
