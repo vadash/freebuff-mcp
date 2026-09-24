@@ -61,13 +61,9 @@ describe('FreebuffDriver', () => {
     expect(driver.needsLogin()).toBe(true);
   }, 30_000);
 
-  it('serves the replayed picker from the last painted screen after a teardown clear', async () => {
-    // keepAlive keeps the pty alive across runTask so the driver can idle the Instance at
-    // the picker afterward, exactly like the supervisor's driver.
-    const { driver, dir } = harness('park-clear', { freebuffModel: 'opus-test' }, undefined, { keepAlive: true });
-    await driver.runTask(dir, 'hello driver');
-    await driver.park();
-    await driver.stop();
+  it('idles at the replayed picker without pressing enter and probes the balance', async () => {
+    const { driver, dir } = harness('happy', undefined, undefined, { keepAlive: true });
+    expect(await driver.awaitIdle(dir)).toBe('picker');
     expect(driver.screenText()).toContain('20/25 Freebucks daily');
     const verdict = classifyScreen(driver.screenText());
     expect(verdict.entries).toEqual([
@@ -81,6 +77,7 @@ describe('FreebuffDriver', () => {
     expect(probe.freebucksDaily).toBe(25);
     expect(probe.freebucksBalance).toBe(20);
     expect(probe.hourSessionMinutesLeft).toBeNull();
+    await driver.stop();
   }, 30_000);
 
   it('exposes the Countdown minutes from the env-controlled stub status line', async () => {
@@ -90,7 +87,7 @@ describe('FreebuffDriver', () => {
   }, 30_000);
 
   it('replays the captured Continue screen after a turn in expire mode', async () => {
-    const { driver, dir } = harness('expire', { freebuffModel: 'opus-test' });
+    const { driver, dir } = harness('expire', { freebuffModel: 'opus-test' }, undefined, { keepAlive: true });
     await driver.runTask(dir, 'then expire');
     const deadline = Date.now() + 5_000;
     while (!driver.screenText().includes(CONTINUE_PROMPT) && Date.now() < deadline) await sleep(100);
@@ -98,22 +95,26 @@ describe('FreebuffDriver', () => {
     expect(verdict.continueScreen).toBe(true);
     expect(verdict.freebucksBalance).toBe(20);
     expect(verdict.ready).toBe(false);
+    expect(await driver.awaitIdle(dir)).toBe('picker');
+    expect(driver.screenText()).toContain(CONTINUE_PROMPT);
+    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(opus-test): after continue');
+    expect(driver.screenText()).not.toContain(CONTINUE_PROMPT);
+    await driver.stop();
   }, 30_000);
 
   it('renders env-controlled picker entries and Freebucks balance on the replayed picker', async () => {
-    const { driver, dir } = harness('park-clear', { freebuffModel: 'opus-test' }, undefined, {
+    const { driver, dir } = harness('happy', undefined, undefined, {
       stubEnv: {
         FREEBUFF_STUB_PICKER: JSON.stringify([{ name: 'GLM 5.3 Flash', price: 0 }, { name: 'DeepSeek V4.1 Flash', price: 5 }]),
         FREEBUFF_STUB_FREEBUCKS: '3/25',
       },
       keepAlive: true,
     });
-    await driver.runTask(dir, 'hello driver');
-    await driver.park();
-    await driver.stop();
+    expect(await driver.awaitIdle(dir)).toBe('picker');
     const verdict = classifyScreen(driver.screenText());
     expect(verdict.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }, { name: 'DeepSeek V4.1 Flash', price: 5 }]);
     expect(verdict.freebucksBalance).toBe(3);
     expect(verdict.freebucksDaily).toBe(25);
+    await driver.stop();
   }, 30_000);
 });

@@ -51,24 +51,81 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     boot('happy');
     await waitForPipe(pipeName, 10_000);
     const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
-    expect(status).toMatchObject({ ok: true, state: 'idle', boundDir: null, queueDepth: 0, activeModel: null });
+    expect(status).toMatchObject({ ok: true, state: 'stopped', boundDir: null, queueDepth: 0, activeModel: null });
     const bad = await requestPipe<Record<string, unknown>>(pipeName, { op: 'bind', dir: `${dirs.taskDir}/nope` });
     expect(bad.ok).toBe(false);
   }, 30_000);
 
-  it('binds, runs a task, parks at the picker, and reports the active model only after spawn', async () => {
+  it('spawns at bind, lands at the picker, and idles at ready after each task without respawning', async () => {
     boot('happy');
     await waitForPipe(pipeName, 10_000);
     const bound = await requestPipe<Record<string, unknown>>(pipeName, { op: 'bind', dir: dirs.taskDir });
-    expect(bound.ok).toBe(true);
-    const parked = await requestPipe<Record<string, unknown>>(
+    expect(bound).toMatchObject({ ok: true, kind: 'ok' });
+    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.taskDir) });
+    const lockBefore = readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8');
+    const first = await requestPipe<Record<string, unknown>>(
       pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'hello park' },
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'first task' },
       30_000,
     );
-    expect(parked).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): hello park' });
-    const status = await pollStatus(pipeName, { state: 'parked', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
-    expect(status.boundDir).toBeTruthy();
+    expect(first).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): first task' });
+    await pollStatus(pipeName, { state: 'ready', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
+    const second = await requestPipe<Record<string, unknown>>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second task' },
+      30_000,
+    );
+    expect(second).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): second task' });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
+    expect(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8')).toBe(lockBefore);
+  }, 60_000);
+
+  it('never sends /end-session across bind, tasks, cancel, and respawn', async () => {
+    boot('slow', { delayMs: 1200 });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'one' }, 30_000)).ok).toBe(true);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'two' }, 30_000)).ok).toBe(true);
+    const victim = requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'victim' }, 30_000);
+    await pollStatus(pipeName, { state: 'busy' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'cancel_task' }, 30_000)).ok).toBe(true);
+    expect(await victim).toMatchObject({ ok: false });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'stopped' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'after respawn' }, 30_000)).ok).toBe(true);
+    expect(existsSync(join(dirs.configDir, 'end-session.log'))).toBe(false);
+  }, 90_000);
+
+  it('respawns into the unexpired Hour session at ready after a kill', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1' } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready' });
+    const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(status).toMatchObject({ hourSessionMinutesLeft: 432 });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'stopped' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
+  }, 60_000);
+
+  it('leaves the continue screen alone while idle and presses enter for the next task', async () => {
+    boot('expire');
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'first' }, 30_000)).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker', queueDepth: 0 });
+    await sleep(1200);
+    expect((await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' })).state).toBe('picker');
+    const second = await requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second' },
+      30_000,
+    );
+    expect(second).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): second' });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 60_000);
 
   it('spawns with the policy head slug merged into settings.json', async () => {
@@ -117,13 +174,14 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(before.ok).toBe(true);
     const rebound = await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir });
     expect(rebound.ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.otherDir) });
     const after = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.otherDir, prompt: 'after' },
       30_000,
     );
     expect(after.ok).toBe(true);
-    await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'parked' });
+    await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'ready', queueDepth: 0 });
     expect(readdirSync(chatsRoot(dirs.otherDir)).length).toBeGreaterThanOrEqual(1);
   }, 60_000);
 
@@ -158,7 +216,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       30_000,
     );
     expect(after.ok).toBe(true);
-    await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'parked', queueDepth: 0 });
+    await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'ready', queueDepth: 0 });
   }, 60_000);
 
   it('rebind purges queued tasks and the next task runs against the new directory', async () => {
@@ -233,7 +291,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       let status: SupervisorResponse | undefined;
       await sup.handle({ op: 'status' }, (response) => { status = response; });
       if (!status || !('state' in status)) throw new Error(`bad status reply: ${JSON.stringify(status)}`);
-      expect(status).toMatchObject({ state: 'idle', queueDepth: 0 });
+      expect(status).toMatchObject({ state: 'stopped', queueDepth: 0 });
       chmodSync(settingsPath, 0o666);
       let next: SupervisorResponse | undefined;
       await sup.handle({ op: 'run_prompt', dir: dirs.taskDir, prompt: 'recovered' }, (response) => { next = response; });
@@ -334,7 +392,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(victimResult.error).toMatch(/cancel/i);
     const survivorResult = await survivor;
     expect(survivorResult).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): survivor' });
-    await pollStatus(pipeName, { state: 'parked', queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 90_000);
 
   it('new_session errors while busy and resets an idle session', async () => {
@@ -353,7 +411,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect((await running).ok).toBe(true);
     const idle = await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' });
     expect(idle.ok).toBe(true);
-    await pollStatus(pipeName, { state: 'idle' });
+    await pollStatus(pipeName, { state: 'stopped' });
     const next = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'after reset' },
@@ -380,7 +438,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/timed out/i);
-    await pollStatus(pipeName, { state: 'idle', queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'stopped', queueDepth: 0 });
   }, 30_000);
 
   it('respawns after a mid-turn crash, re-runs the task, and keeps the queue going', async () => {
@@ -413,7 +471,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     expect(doomed.ok).toBe(false);
     expect(doomed.error).toMatch(/crashed/);
-    await pollStatus(pipeName, { state: 'idle', queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'stopped', queueDepth: 0 });
   }, 60_000);
 
   it('restarts a frozen driver instead of timing out and the task still completes', async () => {
@@ -445,12 +503,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     writeFileSync(lockPath, String(process.pid));
     boot('happy');
     await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const held = await requestPipe<{ ok: boolean; error?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'blocked' },
-      30_000,
-    );
+    const held = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000);
     expect(held.ok).toBe(false);
     expect(held.error).toMatch(/lock_held/);
     const dead = spawn(process.execPath, ['-e', '']);
@@ -458,6 +511,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     dead.once('exit', () => gone.resolve());
     await gone.promise;
     writeFileSync(lockPath, String(dead.pid));
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const done = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'stale ok' },
@@ -471,45 +525,44 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2500, settings: { freebuffModel: 'opus-test' }, ...dirs });
     await waitForPipe(pipeName, 10_000);
     const before = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
-    expect(before).toMatchObject({ trialMinutesLeft: null, freebucksDaily: null, needsLogin: false, updatePending: null });
+    expect(before).toMatchObject({ hourSessionMinutesLeft: null, freebucksDaily: null, needsLogin: false, updatePending: null });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    // Idling at the Model picker after bind: no Countdown on screen, balance visible.
+    await pollStatus(pipeName, { state: 'picker' });
+    const picker = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(picker).toMatchObject({ hourSessionMinutesLeft: null, freebucksDaily: 25, updatePending: { running: '0.0.186', onDisk: '0.0.190' } });
     const task = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'status fields' },
       30_000,
     );
     await pollStatus(pipeName, { state: 'busy' });
-    // While the ready box is up the Countdown ticks; the balance line is only on the picker.
-    const busy = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
-    expect(busy).toMatchObject({ trialMinutesLeft: 432, freebucksDaily: null });
+    // While the ready box is up the Countdown ticks; it paints shortly after the picker clears.
+    const busyDeadline = Date.now() + 10_000;
+    let busy: Record<string, unknown> = {};
+    while (Date.now() < busyDeadline) {
+      busy = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+      if (busy.hourSessionMinutesLeft === 432) break;
+      await sleep(150);
+    }
+    expect(busy).toMatchObject({ hourSessionMinutesLeft: 432, freebucksDaily: null });
     await task;
-    // Idling at the replayed Model picker: no Countdown on screen, balance visible.
-    await pollStatus(pipeName, { state: 'parked' });
+    await pollStatus(pipeName, { state: 'ready' });
     const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
-    expect(status).toMatchObject({
-      trialMinutesLeft: null,
-      freebucksDaily: 25,
-      needsLogin: false,
-      updatePending: { running: '0.0.186', onDisk: '0.0.190' },
-    });
+    expect(status).toMatchObject({ hourSessionMinutesLeft: 432, freebucksDaily: null, needsLogin: false });
     writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.100' }));
     const stale = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
     expect(stale).toMatchObject({ updatePending: null });
   }, 60_000);
 
-  it('flags needs_login and never respawns it', async () => {
+  it('reports needs_login from bind and returns to stopped', async () => {
     boot('needs-login');
     await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const failed = await requestPipe<{ ok: boolean; error?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'hello' },
-      30_000,
-    );
-    expect(failed.ok).toBe(false);
-    expect(failed.error).toMatch(/needs_login/);
-    await pollStatus(pipeName, { needsLogin: true, state: 'idle', queueDepth: 0 });
+    const bound = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000);
+    expect(bound.ok).toBe(false);
+    expect(bound.error).toMatch(/needs_login/);
+    await pollStatus(pipeName, { needsLogin: true, state: 'stopped', queueDepth: 0 });
     const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
-    expect(status).toMatchObject({ trialMinutesLeft: null, freebucksDaily: null });
+    expect(status).toMatchObject({ hourSessionMinutesLeft: null, freebucksDaily: null });
   }, 30_000);
 });

@@ -51,10 +51,13 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     serverProcess = null;
   });
 
-  it('binds, runs two queued prompts in order, and parks at the picker with /new per task', async () => {
+  it('binds, runs two queued prompts in order, and idles at ready with /new per task', async () => {
     const c = boot('happy');
     await c.connect(transport!);
     toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
+    await pollStatus(pipeName, { state: 'picker' });
+    const pickerStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
+    expect(pickerStatus).toMatchObject({ state: 'picker', freebucksDaily: 25, hourSessionMinutesLeft: null });
     const completions: string[] = [];
     const first = c
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task one' } })
@@ -65,12 +68,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       .then((r) => completions.push(toolText(r as CallResult)));
     await Promise.all([first, second]);
     expect(completions).toEqual(['stub(z-ai/glm-5.3-flash): task one', 'stub(z-ai/glm-5.3-flash): task two']);
-    const status = await pollStatus(pipeName, { state: 'parked', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
+    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
     expect(status.boundDir).toContain('freebuff-sup-task-');
-    // Contract (issue #11): the status tool reports the daily allowance as a number.
     const toolStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
-    expect(typeof toolStatus.freebucksDaily).toBe('number');
-    expect(toolStatus.freebucksDaily).toBe(25);
+    expect(toolStatus.hourSessionMinutesLeft).toBe(432);
+    expect(toolStatus.freebucksDaily).toBeNull();
     const chatDirs = readdirSync(chatsRoot(dirs.configDir, dirs.taskDir));
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
     for (const dir of chatDirs) expect(dir.startsWith('chat-new-')).toBe(true);
@@ -82,7 +84,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     const result = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'x' } })) as CallResult;
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toMatch(/bound/i);
-    const status = await pollStatus(pipeName, { state: 'idle', activeModel: null, boundDir: null });
+    const status = await pollStatus(pipeName, { state: 'stopped', activeModel: null, boundDir: null });
     expect(status.queueDepth).toBe(0);
   }, 60_000);
 
@@ -111,7 +113,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(busyReset.content[0]!.text).toMatch(/active or queued/i);
     expect(toolText((await c.callTool({ name: 'cancel_task', arguments: {} })) as CallResult)).toBe('ok');
     expect(await inFlight).toBe(true);
-    await pollStatus(pipeName, { state: 'idle', queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'stopped', queueDepth: 0 });
     const idleReset = (await c.callTool({ name: 'new_session', arguments: {} })) as CallResult;
     toolText(idleReset);
     const next = (await c.callTool({
@@ -156,11 +158,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
 
     const second = boot('slow');
     await second.connect(transport!);
-    await pollStatus(pipeName, { state: 'parked', queueDepth: 0, activeModel: 'z-ai/glm-5.3-flash' });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'z-ai/glm-5.3-flash' });
     const status = JSON.parse(
       toolText((await second.callTool({ name: 'status', arguments: {} })) as CallResult),
     ) as Record<string, unknown>;
-    expect(status).toMatchObject({ state: 'parked', queueDepth: 0, activeModel: 'z-ai/glm-5.3-flash' });
+    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'z-ai/glm-5.3-flash' });
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
   }, 60_000);
 

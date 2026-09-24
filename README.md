@@ -44,7 +44,7 @@ freebuff instance survives it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `bind` | `dir` | Binds freebuff to an existing directory. Refused while a task runs; purges queued tasks. |
+| `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. |
 | `run_prompt` | `dir`, `prompt` | Queues the prompt and waits for freebuff's final answer. `dir` must equal the bound directory. Prompts over 64 KB are written to a file in that directory and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
 | `new_session` | none | Starts a fresh conversation. Refused while a task is active or queued. |
@@ -55,11 +55,11 @@ freebuff instance survives it.
 
 | Field | Meaning |
 |---|---|
-| `state` | `idle`, `spawning`, `busy` or `parked` |
+| `state` | `stopped`, `spawning`, `picker`, `ready` or `busy` |
 | `boundDir` | Bound directory, or `null` |
 | `queueDepth` | Tasks waiting behind the active one (max 4) |
 | `activeModel` | Model the supervisor last wrote to freebuff's settings (not necessarily the running one, see Known issues) |
-| `trialMinutesLeft` | Minutes left in the Hour session, from the screen countdown |
+| `hourSessionMinutesLeft` | Minutes left in the Hour session, from the screen countdown |
 | `freebucksDaily` | Freebucks line from the screen, as text |
 | `needsLogin` | freebuff demands `freebuff login` |
 | `updatePending` | A newer freebuff CLI is installed than the one running |
@@ -95,9 +95,6 @@ as an error.
 
 Tracked against ADR-0001; fixes are being planned.
 
-- **Every task ends the Hour session.** After each task the supervisor sends
-  `/end-session`, which ends the Hour session early for nothing in return.
-  The next task has to start a new one.
 - **The model policy is ignored.** `FREEBUFF_MODELS_FILE` and the built-in
   order (`z-ai/glm-5.3-flash`, `mimo/mimo-v2.5`,
   `deepseek/deepseek-v4.1-flash`) are written to freebuff's `settings.json`,

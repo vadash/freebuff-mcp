@@ -30,7 +30,6 @@ export const SETTINGS_FILENAME = 'settings.json';
 
 // Slash commands typed into the TUI input box.
 export const NEW_COMMAND = '/new';
-export const END_SESSION_COMMAND = '/end-session';
 
 // Screen regexes over the flattened Screen text.
 // Countdown on the ready status line: `7h 12m left`, `1h left`, `59m left`, `2:58 left` (ready.ansi).

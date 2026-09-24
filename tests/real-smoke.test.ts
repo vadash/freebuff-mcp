@@ -95,7 +95,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     }
   });
 
-  it('binds the repo, runs one trivial task matching the chat store, parks, and respawns after a driver kill', async () => {
+  it('binds the repo, runs one trivial task matching the chat store, idles at ready, and respawns after a driver kill', async () => {
     proc = startSupervisor({ pipeName, mode: 'happy', realDriver: true, ...makeDirs() });
     await waitForPipe(pipeName, 60_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: repoRoot })).ok).toBe(true);
@@ -108,8 +108,8 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     expect(done.ok, done.error).toBe(true);
     expect(done.answer).toBe(chatStoreAnswer(configDir, repoRoot));
 
-    const parked = await pollStatus(pipeName, { state: 'parked', queueDepth: 0 });
-    expect(parked.activeModel, `live service rejected policy head ${headSlug}`).toBe(headSlug);
+    const ready = await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
+    expect(ready.activeModel, `live service rejected policy head ${headSlug}`).toBe(headSlug);
 
     const firstPid = livePid(configDir);
     process.kill(firstPid, 'SIGKILL');
@@ -123,7 +123,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       runTimeoutMs,
     );
     expect(respawned.ok, respawned.error).toBe(true);
-    await pollStatus(pipeName, { state: 'parked', activeModel: headSlug, queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'ready', activeModel: headSlug, queueDepth: 0 });
     const secondPid = livePid(configDir);
     expect(secondPid).not.toBe(firstPid);
     expect(pidAlive(secondPid), `respawned freebuff process ${secondPid} is not alive`).toBe(true);

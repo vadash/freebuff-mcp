@@ -8,7 +8,7 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, END_SESSION_COMMAND, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
+import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
@@ -158,21 +158,17 @@ export class FreebuffDriver {
     this.kill();
   }
 
-  async park(): Promise<void> {
-    const instance = this.live;
-    if (!instance || instance.exited) return;
-    const stale = instance.screen.text();
-    instance.pty.write(END_SESSION_COMMAND);
-    await sleep(TYPE_DELAY_MS);
-    instance.pty.write('\r');
-    const deadline = Date.now() + this.readyMs;
-    while (Date.now() < deadline) {
-      if (instance.exited) throw new FreebuffDriverError('process_exited');
-      const text = instance.screen.text();
-      if (text !== stale && !text.includes(READY_PROMPT) && classifyScreen(text).picker !== null) return;
-      await sleep(POLL_MS);
-    }
-    throw new FreebuffDriverError('ready_timeout');
+  async awaitIdle(dir: string): Promise<'picker' | 'ready'> {
+    const instance = this.acquire(dir);
+    return await this.waitSettled(
+      instance.pty,
+      instance.screen,
+      () => {
+        if (instance.exited) throw new FreebuffDriverError('process_exited');
+      },
+      dir,
+      true,
+    );
   }
 
   private chatsRoot(dir: string): string {
@@ -192,7 +188,7 @@ export class FreebuffDriver {
       if (instance.exited) throw new FreebuffDriverError('process_exited');
     };
     try {
-      await this.waitReady(pty, instance.screen, assertAlive, dir);
+      await this.waitSettled(pty, instance.screen, assertAlive, dir, false);
       this.options.onReady?.();
       const baseline = turnBaseline(this.snapshot(chatsRoot));
       if (this.options.keepAlive) {
@@ -272,9 +268,10 @@ export class FreebuffDriver {
     });
   }
 
-  private async waitReady(pty: IPty, screen: CliTerminalScreen, assertAlive: () => void, dir: string): Promise<void> {
+  private async waitSettled(pty: IPty, screen: CliTerminalScreen, assertAlive: () => void, dir: string, idle: boolean): Promise<'picker' | 'ready'> {
     const deadline = Date.now() + this.readyMs;
     let lastPickerEnterAt = 0;
+    let continuePressed = false;
     // Picker and single-instance dialog both clear on ENTER; throttle the re-entries.
     const pressEnterWhenBlocked = (blocked: boolean): boolean => {
       if (!blocked || Date.now() - lastPickerEnterAt <= PICKER_REENTER_MS) return false;
@@ -297,9 +294,22 @@ export class FreebuffDriver {
       if (verdict.ready) {
         if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
         this.loginRequired = false;
-        return;
+        return 'ready';
       }
-      pressEnterWhenBlocked(verdict.picker !== null);
+      if (idle) {
+        if (verdict.picker !== null || verdict.continueScreen) {
+          this.loginRequired = false;
+          return 'picker';
+        }
+      } else if (verdict.continueScreen && !continuePressed) {
+        // Issue #12: the Continue screen clears on one ENTER per task arrival; an idle
+        // Instance at the Continue screen must not be touched.
+        continuePressed = true;
+        pty.write('\r');
+        await sleep(POLL_MS);
+      } else {
+        pressEnterWhenBlocked(verdict.picker !== null);
+      }
       await sleep(POLL_MS);
     }
     throw new FreebuffDriverError('ready_timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));

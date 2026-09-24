@@ -7,11 +7,12 @@ import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { runDoctor } from './doctor.ts';
 import { SETTINGS_FILENAME } from './protocol/markers.ts';
+import { classifyScreen } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage, readSettings } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
 
-export type SupervisorState = 'idle' | 'spawning' | 'busy' | 'parked';
+export type SupervisorState = 'stopped' | 'spawning' | 'picker' | 'ready' | 'busy';
 
 export interface SupervisorConfig {
   pipeName?: string;
@@ -30,14 +31,13 @@ export type SupervisorRequest =
   | { op: 'shutdown' };
 
 // The status field list is defined once, here. Field names are the public wire
-// contract; `trialMinutesLeft` keeps its wire name even though the domain name
-// is Hour session (a later contract ticket renames it).
+// contract.
 export interface StatusPayload {
   state: SupervisorState;
   boundDir: string | null;
   queueDepth: number;
   activeModel: string | null;
-  trialMinutesLeft: number | null;
+  hourSessionMinutesLeft: number | null;
   freebucksDaily: number | null;
   needsLogin: boolean;
   updatePending: { running: string; onDisk: string } | null;
@@ -60,7 +60,7 @@ interface QueuedTask {
 const FROZEN = Symbol('frozen');
 
 export class Supervisor {
-  private state: SupervisorState = 'idle';
+  private state: SupervisorState = 'stopped';
   private boundDir: string | null = null;
   private readonly queue: QueuedTask[] = [];
   private active: QueuedTask | null = null;
@@ -81,7 +81,6 @@ export class Supervisor {
       ...(config.driver ?? defaultDriverOptions()),
       keepAlive: true,
       onReady: () => {
-        if (this.state === 'spawning') this.state = 'busy';
         this.activeModel = readModelSlug(this.configDir);
       },
     });
@@ -101,7 +100,7 @@ export class Supervisor {
   handle = async (request: SupervisorRequest, reply: (response: SupervisorResponse) => void): Promise<void> => {
     switch (request.op) {
       case 'bind':
-        reply(this.bind(request.dir));
+        await this.bindInstance(request.dir, reply);
         break;
       case 'run_prompt':
         await this.runPrompt(request.dir, request.prompt, reply);
@@ -117,11 +116,11 @@ export class Supervisor {
         reply({
           ok: true,
           kind: 'status',
-          state: this.state,
+          state: this.observedState(),
           boundDir: this.boundDir,
           queueDepth: this.queue.length,
           activeModel: this.activeModel,
-          trialMinutesLeft: probe.hourSessionMinutesLeft,
+          hourSessionMinutesLeft: probe.hourSessionMinutesLeft,
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),
           updatePending:
@@ -147,10 +146,11 @@ export class Supervisor {
     }
   };
 
-  private bind(dir: string): SupervisorResponse {
+  private async bindInstance(dir: string, reply: (response: SupervisorResponse) => void): Promise<void> {
     // Issue #5: a rebind is blocked only by an active task; queued tasks are purged.
     if (this.active !== null) {
-      return { ok: false, kind: 'error', error: 'bind rejected: a task is active' };
+      reply({ ok: false, kind: 'error', error: 'bind rejected: a task is active' });
+      return;
     }
     for (const task of this.queue.splice(0)) {
       task.reply({ ok: false, kind: 'error', error: 'rebind purged this queued task: the directory was rebound' });
@@ -160,17 +160,26 @@ export class Supervisor {
       resolved = resolve(dir);
       if (!statSync(resolved).isDirectory()) throw new Error('not a directory');
     } catch {
-      return { ok: false, kind: 'error', error: `bind failed: ${dir} is not an existing directory` };
+      reply({ ok: false, kind: 'error', error: `bind failed: ${dir} is not an existing directory` });
+      return;
     }
     this.driver.kill();
     this.boundDir = resolved;
-    this.state = 'idle';
-    return { ok: true, kind: 'ok' };
+    this.state = 'spawning';
+    try {
+      this.activeModel = applyModelPolicy(this.configDir);
+      this.state = await this.driver.awaitIdle(resolved);
+      reply({ ok: true, kind: 'ok' });
+    } catch (error) {
+      this.driver.kill();
+      this.state = 'stopped';
+      reply({ ok: false, kind: 'error', error: `bind failed: ${errorMessage(error)}` });
+    }
   }
 
   private async cancelTask(reply: (response: SupervisorResponse) => void): Promise<void> {
     const task = this.active;
-    if (task === null || this.state !== 'busy') {
+    if (task === null) {
       reply({ ok: false, kind: 'error', error: 'cancel_task failed: no task is active' });
       return;
     }
@@ -184,8 +193,22 @@ export class Supervisor {
       return { ok: false, kind: 'error', error: 'new_session failed: a task is active or queued' };
     }
     this.driver.kill();
-    this.state = 'idle';
+    this.state = 'stopped';
     return { ok: true, kind: 'ok' };
+  }
+
+  private observedState(): SupervisorState {
+    if (this.active !== null) return 'busy';
+    if (this.state === 'spawning') return 'spawning';
+    return this.screenState();
+  }
+
+  private screenState(): SupervisorState {
+    if (!this.driver.isAlive()) return 'stopped';
+    const verdict = classifyScreen(this.driver.screenText());
+    if (verdict.ready) return 'ready';
+    if (verdict.picker !== null || verdict.continueScreen) return 'picker';
+    return 'stopped';
   }
 
   private async runPrompt(dir: string, prompt: string, reply: (response: SupervisorResponse) => void): Promise<void> {
@@ -307,12 +330,11 @@ export class Supervisor {
         prompt = `Read the instructions in ${basename(tempFile)} in the current directory and follow them.`;
       }
       const answer = await this.supervised(task, prompt);
-      await this.driver.park();
-      this.state = 'parked';
+      this.state = this.screenState();
       task.reply({ ok: true, kind: 'answer', answer });
     } catch (error) {
       this.driver.kill();
-      this.state = 'idle';
+      this.state = 'stopped';
       task.reply(
         task.cancelled
           ? { ok: false, kind: 'error', error: 'task cancelled' }

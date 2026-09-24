@@ -5,7 +5,8 @@
 // Continue screen replay the real captured fixtures verbatim
 // (tests/fixtures/screen/README.md); FREEBUFF_STUB_COUNTDOWN_MIN,
 // FREEBUFF_STUB_FREEBUCKS and FREEBUFF_STUB_PICKER override the numbers the
-// protocol reads.
+// protocol reads; FREEBUFF_STUB_SESSION_ALIVE=1 boots into the ready screen of
+// an unexpired Hour session instead of the picker.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -31,6 +32,7 @@ const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
 
 // Env controls (issue #11): Countdown minutes, Freebucks balance, picker entries and prices.
 const countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
+const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
 const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? '20/25').split('/').map(Number);
 const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
 
@@ -138,15 +140,9 @@ const chatsExist = () => {
 const submit = async (prompt) => {
   if (!prompt || mode === 'no-ack') return;
   if (prompt === '/end-session') {
-    if (lastLogPath) appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: 'end-session' }) + '\n');
+    appendFileSync(join(configDir, 'end-session.log'), JSON.stringify({ [MSG_KEY]: 'end-session' }) + '\n');
     out(pickerScreen());
     phase = 'picker';
-    if (mode === 'park-clear') {
-      setTimeout(() => {
-        out(CLEAR);
-        process.exit(0);
-      }, 1200);
-    }
     return;
   }
   if (prompt === '/new') {
@@ -225,7 +221,7 @@ if (mode === 'needs-login') {
   out(LOGIN_REQUIRED + '\r\n');
   for (;;) await sleep(1_000);
 }
-if (model === 'none') {
+if (model === 'none' || !sessionAlive) {
   phase = 'picker';
   out(pickerScreen());
 } else {
