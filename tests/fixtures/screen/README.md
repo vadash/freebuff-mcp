@@ -43,8 +43,7 @@ Exact strings the protocol depends on:
 
 Notes: the picker is expanded on arrival for a profile that has submitted a prompt before;
 no keyboard path to a collapsed "See all N models" state was found, so there is no real
-collapsed capture. The remembered model (from `settings.json` `freebuffModel`) holds the
-cursor, not necessarily the top row.
+collapsed capture. The remembered model holds the cursor, not necessarily the top row.
 
 ## ready.ansi
 

@@ -26,14 +26,18 @@ export const LOG_FILENAME = 'log.jsonl';
 export const INSTANCE_RECORD_FILENAME = 'freebuff-instance-owner.json';
 export const LOCK_FILENAME = 'freebuff.lock';
 export const METADATA_FILENAME = 'freebuff-metadata.json';
-export const SETTINGS_FILENAME = 'settings.json';
 
 // Slash commands typed into the TUI input box.
 export const NEW_COMMAND = '/new';
 
+// Keystrokes: down-arrow moves the picker cursor one row.
+export const DOWN_ARROW = '\x1b[B';
+
 // Screen regexes over the flattened Screen text.
 // Countdown on the ready status line: `7h 12m left`, `1h left`, `59m left`, `2:58 left` (ready.ansi).
 export const COUNTDOWN_REGEX = /(?:(\d+)h(?:\s+(\d+)m)?|(\d+)m)\s+left|(\d+):(\d\d)\s+left/;
+// Status line separator: `Solar Mini 4 · 1h left · 12.9K (3%)`; the model is the leading segment.
+export const STATUS_SEPARATOR = '·';
 // Price on a picker row: `5 Freebucks/hr` (picker-expanded.ansi).
 export const PRICE_REGEX = /(\d+)\s+Freebucks\/hr/;
 // Balance on the picker: `FREE · 20/25 Freebucks daily · resets in 9h 12m`; an exhausted

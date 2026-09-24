@@ -20,7 +20,7 @@ const boot = (mode: string, extra: Partial<HarnessOptions> = {}): Client => {
   transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--experimental-strip-types', serverEntry],
-    env: plainEnv({ pipeName, mode, settings: { freebuffModel: 'opus-test' }, ...dirs, ...extra }),
+    env: plainEnv({ pipeName, mode, ...dirs, ...extra }),
   });
   client = new Client({ name: 'test-client', version: '0.0.0' });
   return client;
@@ -37,7 +37,7 @@ const chatsRoot = (configDir: string, taskDir: string): string =>
 describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
   beforeEach(() => {
     pipeName = uniquePipe('mcp');
-    dirs = makeDirs({ freebuffModel: 'opus-test' });
+    dirs = makeDirs();
   });
 
   afterEach(async () => {
@@ -67,8 +67,8 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task two' } })
       .then((r) => completions.push(toolText(r as CallResult)));
     await Promise.all([first, second]);
-    expect(completions).toEqual(['stub(z-ai/glm-5.3-flash): task one', 'stub(z-ai/glm-5.3-flash): task two']);
-    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
+    expect(completions).toEqual(['stub(DeepSeek V4.1 Flash): task one', 'stub(DeepSeek V4.1 Flash): task two']);
+    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'DeepSeek V4.1 Flash', queueDepth: 0 });
     expect(status.boundDir).toContain('freebuff-sup-task-');
     const toolStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
     expect(toolStatus.hourSessionMinutesLeft).toBe(432);
@@ -120,7 +120,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       name: 'run_prompt',
       arguments: { dir: dirs.taskDir, prompt: 'after reset' },
     })) as CallResult;
-    expect(toolText(next)).toBe('stub(z-ai/glm-5.3-flash): after reset');
+    expect(toolText(next)).toBe('stub(DeepSeek V4.1 Flash): after reset');
   }, 90_000);
 
   it('survives the MCP client disconnecting and completes the in-flight task', async () => {
@@ -128,12 +128,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       pipeName,
       mode: 'slow',
       delayMs: 3000,
-      settings: { freebuffModel: 'opus-test' },
       ...dirs,
     });
     await waitForPipe(pipeName, 10_000);
     const first = boot('slow');
-    const firstEnv = plainEnv({ pipeName, mode: 'slow', delayMs: 3000, settings: { freebuffModel: 'opus-test' }, ...dirs });
+    const firstEnv = plainEnv({ pipeName, mode: 'slow', delayMs: 3000, ...dirs });
     transport = new StdioClientTransport({
       command: process.execPath,
       args: ['--experimental-strip-types', serverEntry],
@@ -158,11 +157,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
 
     const second = boot('slow');
     await second.connect(transport!);
-    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'z-ai/glm-5.3-flash' });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
     const status = JSON.parse(
       toolText((await second.callTool({ name: 'status', arguments: {} })) as CallResult),
     ) as Record<string, unknown>;
-    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'z-ai/glm-5.3-flash' });
+    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
   }, 60_000);
 

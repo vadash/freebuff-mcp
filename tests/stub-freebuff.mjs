@@ -6,7 +6,9 @@
 // (tests/fixtures/screen/README.md); FREEBUFF_STUB_COUNTDOWN_MIN,
 // FREEBUFF_STUB_FREEBUCKS and FREEBUFF_STUB_PICKER override the numbers the
 // protocol reads; FREEBUFF_STUB_SESSION_ALIVE=1 boots into the ready screen of
-// an unexpired Hour session instead of the picker.
+// an unexpired Hour session instead of the picker. The displayed model is
+// keyboard-driven (issue #13): picker cursor keystrokes pick the entry whose
+// name the ready status line and the `stub(<model>):` answer echo report.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -74,7 +76,7 @@ const pickerScreen = () => {
       '',
       ...pickerOverride.flatMap((entry, i) => [
         bar('┌', '┐'),
-        cell(`   ${i === 0 ? '›' : ' '} ${entry.name}    NEW`),
+        cell(`   ${i === selection ? '›' : ' '} ${entry.name}    NEW`),
         priceRow(entry.price),
         bar('└', '┘'),
         '',
@@ -114,14 +116,20 @@ const projectKey = basename(cwd);
 // the supervisor claims stale locks via pid liveness before spawning.
 writeFileSync(join(configDir, 'freebuff.lock'), String(process.pid));
 
-let settings = null;
-try {
-  settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
-} catch {}
-const model = typeof settings?.freebuffModel === 'string' ? settings.freebuffModel : 'none';
+// The displayed model is keyboard-driven: the picker cursor names it (issue #13), never
+// settings.json. Without FREEBUFF_STUB_PICKER the replayed fixture keeps the real TUI's
+// remembered-model cursor, and a pick lands on that row.
+const fixtureCursorName = () => {
+  const lines = fixture('picker-expanded.ansi').split('\n');
+  const cursorLine = lines.find((line) => line.includes('›')) ?? '';
+  return cursorLine.replace(/[│›]/g, ' ').trim().split(/\s{2,}/)[0] ?? 'none';
+};
 
 let phase = 'picker';
 let pending = '';
+let selection = 0;
+let model = 'none';
+let escapeState = 0;
 let chatCounter = 0;
 let newChatRequested = false;
 let lastLogPath = null;
@@ -184,13 +192,31 @@ const submit = async (prompt) => {
 };
 
 process.stdin.setEncoding('utf8');
+// The real TUI reads raw keys; a cooked stdin lets the console host swallow the
+// picker's arrow keys before this process ever sees them.
+process.stdin.setRawMode(true);
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('data', (chunk) => {
   for (const char of chunk) {
-    // ConPTY line input turns one written CR into CR LF; the real TUI reads raw
-    // keys, so LF must not count as a second Enter.
+    // Escape sequences: only the down/up arrows matter, and only at the picker.
+    if (escapeState === 1) {
+      escapeState = char === '[' ? 2 : 0;
+      continue;
+    }
+    if (escapeState === 2) {
+      if (pickerOverride !== null && phase === 'picker') {
+        const last = pickerOverride.length - 1;
+        if (char === 'A' && selection > 0) selection -= 1;
+        if (char === 'B' && selection < last) selection += 1;
+        out(pickerScreen());
+      }
+      escapeState = 0;
+      continue;
+    }
+    // Raw mode delivers Enter as CR; a stray LF must not count as a second Enter.
     if (char === '\r') {
       if (phase === 'picker') {
+        model = pickerOverride !== null ? (pickerOverride[selection]?.name ?? 'none') : fixtureCursorName();
         phase = 'ready';
         out(readyScreen());
       } else if (phase === 'continue') {
@@ -202,10 +228,14 @@ process.stdin.on('data', (chunk) => {
         pending = '';
         void submit(prompt);
       }
-    } else if (char === '\x1b' && phase === 'continue') {
+    } else if (char === '\x1b') {
       // Esc on the Continue screen reopens the Model picker.
-      phase = 'picker';
-      out(pickerScreen());
+      if (phase === 'continue') {
+        phase = 'picker';
+        out(pickerScreen());
+      } else {
+        escapeState = 1;
+      }
     } else if (char !== '\n') {
       pending += char;
     }
@@ -221,10 +251,11 @@ if (mode === 'needs-login') {
   out(LOGIN_REQUIRED + '\r\n');
   for (;;) await sleep(1_000);
 }
-if (model === 'none' || !sessionAlive) {
-  phase = 'picker';
-  out(pickerScreen());
-} else {
+if (sessionAlive) {
+  model = fixtureCursorName();
   phase = 'ready';
   out(readyScreen());
+} else {
+  phase = 'picker';
+  out(pickerScreen());
 }

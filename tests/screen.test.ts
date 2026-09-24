@@ -18,13 +18,14 @@ const verdict = (over: Record<string, unknown> = {}): Record<string, unknown> =>
   freebucksBalance: null,
   freebucksDaily: null,
   countdownMinutes: null,
+  activeModel: null,
   continueScreen: false,
   ...over,
 });
 
 describe('classifyScreen', () => {
   it('reports a ready prompt with the Countdown from the status line', async () => {
-    expect(classifyScreen(await screen('ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 60 }));
+    expect(classifyScreen(await screen('ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 60, activeModel: 'Solar Mini 4' }));
   });
 
   it('reports the connecting spinner even when the prompt is rendered below', async () => {
@@ -105,7 +106,7 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
 
 describe('flattenScreen', () => {
   it('renders chunks through one shared screen', async () => {
-    expect(classifyScreen(await flattenScreen([load('ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 60 }));
+    expect(classifyScreen(await flattenScreen([load('ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 60, activeModel: 'Solar Mini 4' }));
   });
 
   it('reassembles an escape sequence split mid-sequence', async () => {

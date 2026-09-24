@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
-import { chmodSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
 import { sleep } from '../src/util.ts';
@@ -12,7 +12,7 @@ let proc: SupervisorProcess | null = null;
 let dirs: HarnessDirs;
 
 const boot = (mode: string, extra: Partial<HarnessOptions> = {}): void => {
-  proc = startSupervisor({ pipeName, mode, settings: { freebuffModel: 'opus-test' }, ...dirs, ...extra });
+  proc = startSupervisor({ pipeName, mode, ...dirs, ...extra });
 };
 
 const chatsRoot = (taskDir: string): string => join(dirs.configDir, 'projects', basename(taskDir), 'chats');
@@ -37,7 +37,7 @@ const latestFirstMsg = (taskDir: string): string => {
 describe('supervisor daemon (named-pipe protocol)', () => {
   beforeEach(() => {
     pipeName = uniquePipe('sup');
-    dirs = makeDirs({ freebuffModel: 'opus-test' });
+    dirs = makeDirs();
   });
 
   afterEach(async () => {
@@ -61,21 +61,21 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await waitForPipe(pipeName, 10_000);
     const bound = await requestPipe<Record<string, unknown>>(pipeName, { op: 'bind', dir: dirs.taskDir });
     expect(bound).toMatchObject({ ok: true, kind: 'ok' });
-    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.taskDir) });
+    await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.taskDir), activeModel: null });
     const lockBefore = readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8');
     const first = await requestPipe<Record<string, unknown>>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'first task' },
       30_000,
     );
-    expect(first).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): first task' });
-    await pollStatus(pipeName, { state: 'ready', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
+    expect(first).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): first task' });
+    await pollStatus(pipeName, { state: 'ready', activeModel: 'DeepSeek V4.1 Flash', queueDepth: 0 });
     const second = await requestPipe<Record<string, unknown>>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second task' },
       30_000,
     );
-    expect(second).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): second task' });
+    expect(second).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second task' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     expect(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8')).toBe(lockBefore);
   }, 60_000);
@@ -124,42 +124,8 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second' },
       30_000,
     );
-    expect(second).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): second' });
+    expect(second).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
-  }, 60_000);
-
-  it('spawns with the policy head slug merged into settings.json', async () => {
-    const modelsFile = join(dirs.configDir, 'models.txt');
-    writeFileSync(modelsFile, 'z-ai/glm-5.3-flash\nmimo/mimo-v2.5\n');
-    writeFileSync(join(dirs.configDir, 'settings.json'), JSON.stringify({ freebuffModel: 'opus-test', theme: 'dark' }));
-    boot('happy', { modelsFile });
-    await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const done = await requestPipe<{ ok: boolean; answer?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'policy' },
-      30_000,
-    );
-    expect(done.answer).toBe('stub(z-ai/glm-5.3-flash): policy');
-    expect(JSON.parse(readFileSync(join(dirs.configDir, 'settings.json'), 'utf8'))).toEqual({
-      freebuffModel: 'z-ai/glm-5.3-flash',
-      theme: 'dark',
-    });
-    await pollStatus(pipeName, { activeModel: 'z-ai/glm-5.3-flash' });
-  }, 60_000);
-
-  it('picks the first valid policy line, skipping empty and invalid lines', async () => {
-    const modelsFile = join(dirs.configDir, 'models.txt');
-    writeFileSync(modelsFile, '\n   \nnot-a-slug\nmimo/mimo-v2.5\n');
-    boot('happy', { modelsFile });
-    await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const done = await requestPipe<{ ok: boolean; answer?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'skippy' },
-      30_000,
-    );
-    expect(done.answer).toBe('stub(mimo/mimo-v2.5): skippy');
   }, 60_000);
 
   it('rebind accepts a new directory once idle and the next task runs against the new state', async () => {
@@ -195,7 +161,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
   }, 30_000);
 
   it('rejects bind only while a task is active and rebinds once the queue drains', async () => {
-    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2000, settings: { freebuffModel: 'opus-test' }, ...dirs });
+    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2000, ...dirs });
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const task = requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'long task' }, 30_000);
@@ -252,7 +218,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       }
       let task: SupervisorResponse | undefined;
       await sup.handle({ op: 'run_prompt', dir: dirs.otherDir, prompt: 'after purge' }, (response) => { task = response; });
-      expect(task).toEqual({ ok: true, kind: 'answer', answer: 'stub(z-ai/glm-5.3-flash): after purge' });
+      expect(task).toEqual({ ok: true, kind: 'answer', answer: 'stub(DeepSeek V4.1 Flash): after purge' });
       let status: SupervisorResponse | undefined;
       await sup.handle({ op: 'status' }, (response) => { status = response; });
       if (!status || !('state' in status)) throw new Error(`bad status reply: ${JSON.stringify(status)}`);
@@ -265,47 +231,8 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     }
   }, 45_000);
 
-  it('fails the task with a clear error when the model policy cannot be written and keeps pumping', async () => {
-    const settingsPath = join(dirs.configDir, 'settings.json');
-    const sup = new Supervisor({
-      pipeName: uniquePipe('policy'),
-      driver: {
-        executable: process.execPath,
-        argsPrefix: [stubPath],
-        configDir: dirs.configDir,
-        env: { FREEBUFF_STUB_MODE: 'happy' },
-        keepAlive: true,
-      },
-      taskTimeoutMs: 30_000,
-    });
-    try {
-      let bound: SupervisorResponse | undefined;
-      await sup.handle({ op: 'bind', dir: dirs.taskDir }, (response) => { bound = response; });
-      expect(bound).toEqual({ ok: true, kind: 'ok' });
-      chmodSync(settingsPath, 0o444);
-      let failed: SupervisorResponse | undefined;
-      await sup.handle({ op: 'run_prompt', dir: dirs.taskDir, prompt: 'doomed' }, (response) => { failed = response; });
-      if (!failed || !('error' in failed)) throw new Error(`bad failure reply: ${JSON.stringify(failed)}`);
-      expect(failed.ok).toBe(false);
-      expect(failed.error).toMatch(/model policy failed/i);
-      let status: SupervisorResponse | undefined;
-      await sup.handle({ op: 'status' }, (response) => { status = response; });
-      if (!status || !('state' in status)) throw new Error(`bad status reply: ${JSON.stringify(status)}`);
-      expect(status).toMatchObject({ state: 'stopped', queueDepth: 0 });
-      chmodSync(settingsPath, 0o666);
-      let next: SupervisorResponse | undefined;
-      await sup.handle({ op: 'run_prompt', dir: dirs.taskDir, prompt: 'recovered' }, (response) => { next = response; });
-      expect(next).toEqual({ ok: true, kind: 'answer', answer: 'stub(z-ai/glm-5.3-flash): recovered' });
-    } finally {
-      chmodSync(settingsPath, 0o666);
-      // driver is compile-time private; named cast to stop the spawned stub.
-      const driver = (sup as unknown as { driver: { kill(): void } }).driver;
-      driver.kill();
-    }
-  }, 45_000);
-
   it('reports busy with a queue position once the queue is full and drains in FIFO order', async () => {
-    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 1200, settings: { freebuffModel: 'opus-test' }, ...dirs });
+    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 1200, ...dirs });
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const answers: string[] = [];
@@ -325,7 +252,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(overflow.busy).toBe(true);
     expect(overflow.position).toBe(5);
     await Promise.all(tasks);
-    expect(answers).toEqual(['stub(z-ai/glm-5.3-flash): p1', 'stub(z-ai/glm-5.3-flash): p2', 'stub(z-ai/glm-5.3-flash): p3', 'stub(z-ai/glm-5.3-flash): p4', 'stub(z-ai/glm-5.3-flash): p5']);
+    expect(answers).toEqual(['stub(DeepSeek V4.1 Flash): p1', 'stub(DeepSeek V4.1 Flash): p2', 'stub(DeepSeek V4.1 Flash): p3', 'stub(DeepSeek V4.1 Flash): p4', 'stub(DeepSeek V4.1 Flash): p5']);
   }, 90_000);
 
   it('routes prompts above the paste threshold through a temp file and keeps small prompts on the paste path', async () => {
@@ -356,7 +283,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'tiny payload' },
       30_000,
     );
-    expect(small).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): tiny payload' });
+    expect(small).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): tiny payload' });
     expect(latestFirstMsg(dirs.taskDir)).toBe('tiny payload');
     expect(existsSync(join(dirs.taskDir, '.freebuff-task-2.md'))).toBe(false);
   }, 90_000);
@@ -391,7 +318,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(victimResult.ok).toBe(false);
     expect(victimResult.error).toMatch(/cancel/i);
     const survivorResult = await survivor;
-    expect(survivorResult).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): survivor' });
+    expect(survivorResult).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): survivor' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 90_000);
 
@@ -417,7 +344,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'after reset' },
       30_000,
     );
-    expect(next).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): after reset' });
+    expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): after reset' });
   }, 90_000);
 
   it('fails a task on timeout and frees the session', async () => {
@@ -426,7 +353,6 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       mode: 'slow',
       delayMs: 8000,
       taskTimeoutMs: 1500,
-      settings: { freebuffModel: 'opus-test' },
       ...dirs,
     });
     await waitForPipe(pipeName, 10_000);
@@ -456,8 +382,8 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       60_000,
     );
     await pollStatus(pipeName, { queueDepth: 1 });
-    await expect(first).resolves.toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): first task' });
-    await expect(second).resolves.toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): second task' });
+    await expect(first).resolves.toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): first task' });
+    await expect(second).resolves.toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second task' });
   }, 90_000);
 
   it('fails a task with reason crashed once respawns are exhausted', async () => {
@@ -480,7 +406,6 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       mode: 'freeze',
       freezeMs: 1200,
       taskTimeoutMs: 20_000,
-      settings: { freebuffModel: 'opus-test' },
       ...dirs,
     });
     await waitForPipe(pipeName, 10_000);
@@ -491,7 +416,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'thaw' },
       60_000,
     );
-    expect(done).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): thaw' });
+    expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): thaw' });
     expect(Date.now() - started).toBeLessThan(30_000);
     const root = chatsRoot(dirs.taskDir);
     const logs = readdirSync(root).map((dir) => readFileSync(join(root, dir, 'log.jsonl'), 'utf8'));
@@ -517,12 +442,12 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'stale ok' },
       60_000,
     );
-    expect(done).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): stale ok' });
+    expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): stale ok' });
   }, 60_000);
 
   it('reports countdown, freebucks, and update fields on status', async () => {
     writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.190' }));
-    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2500, settings: { freebuffModel: 'opus-test' }, ...dirs });
+    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2500, ...dirs });
     await waitForPipe(pipeName, 10_000);
     const before = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
     expect(before).toMatchObject({ hourSessionMinutesLeft: null, freebucksDaily: null, needsLogin: false, updatePending: null });
@@ -565,4 +490,69 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
     expect(status).toMatchObject({ hourSessionMinutesLeft: null, freebucksDaily: null });
   }, 30_000);
+});
+
+describe('model pick rule at the picker (ADR-0001 #6)', () => {
+  beforeEach(() => {
+    pipeName = uniquePipe('pick');
+    dirs = makeDirs();
+  });
+
+  afterEach(async () => {
+    if (proc) {
+      await requestPipe(pipeName, { op: 'shutdown' }).catch(() => {});
+      await expectExit(proc);
+    }
+  });
+
+  const pickCase = (
+    name: string,
+    picker: Array<{ name: string; price: number }>,
+    balance: string,
+    expected: string,
+  ): void => {
+    it(name, async () => {
+      boot('happy', { stubEnv: { FREEBUFF_STUB_PICKER: JSON.stringify(picker), FREEBUFF_STUB_FREEBUCKS: balance } });
+      await waitForPipe(pipeName, 10_000);
+      expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+      const done = await requestPipe<{ ok: boolean; answer?: string }>(
+        pipeName,
+        { op: 'run_prompt', dir: dirs.taskDir, prompt: 'pick' },
+        30_000,
+      );
+      expect(done).toMatchObject({ ok: true, answer: `stub(${expected}): pick` });
+      await pollStatus(pipeName, { state: 'ready', activeModel: expected, queueDepth: 0 });
+    }, 60_000);
+  };
+
+  pickCase(
+    'picks the first deepseek entry when the balance covers its price',
+    [{ name: 'DeepSeek-V3', price: 5 }, { name: 'GLM-4.7', price: 0 }],
+    '20/25',
+    'DeepSeek-V3',
+  );
+  pickCase(
+    'skips an unaffordable deepseek for glm',
+    [{ name: 'DeepSeek-V3', price: 5 }, { name: 'GLM-4.7', price: 0 }],
+    '3/25',
+    'GLM-4.7',
+  );
+  pickCase(
+    'falls back to mimo without deepseek or glm entries',
+    [{ name: 'Kimi-K2', price: 0 }, { name: 'MiMo', price: 0 }, { name: 'Qwen3', price: 0 }],
+    '20/25',
+    'MiMo',
+  );
+  pickCase(
+    'takes the top entry when none of the three is listed',
+    [{ name: 'Kimi-K2', price: 0 }, { name: 'Qwen3', price: 0 }],
+    '20/25',
+    'Kimi-K2',
+  );
+  pickCase(
+    'matches mixed-case names',
+    [{ name: 'MiMo', price: 0 }, { name: 'DEEPSEEK-V3', price: 9 }, { name: 'GLM', price: 0 }],
+    '3/25',
+    'GLM',
+  );
 });

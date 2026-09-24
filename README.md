@@ -58,7 +58,7 @@ freebuff instance survives it.
 | `state` | `stopped`, `spawning`, `picker`, `ready` or `busy` |
 | `boundDir` | Bound directory, or `null` |
 | `queueDepth` | Tasks waiting behind the active one (max 4) |
-| `activeModel` | Model the supervisor last wrote to freebuff's settings (not necessarily the running one, see Known issues) |
+| `activeModel` | Model observed on the ready Screen status line; `null` while no model shows (e.g. at the Model picker) |
 | `hourSessionMinutesLeft` | Minutes left in the Hour session, from the screen countdown |
 | `freebucksDaily` | Freebucks line from the screen, as text |
 | `needsLogin` | freebuff demands `freebuff login` |
@@ -87,7 +87,10 @@ as an error.
   It runs for one wall-clock hour whatever happens, is locked to the directory
   freebuff started in, and resumes if freebuff is relaunched there.
 - Starting one costs **Freebucks** from a daily allowance (25 or 40); prices
-  vary by model (e.g. 0/5/10).
+  vary by model (e.g. 0/5/10). When a task arrives at the picker, the
+  supervisor picks, in order: the first model whose name contains `deepseek`
+  (case-insensitive) that the balance can afford, else the first containing
+  `glm`, else the first containing `mimo`, else the top row.
 - So this tool is economical only when you work in **one directory**: rebinding
   elsewhere starts a new Hour session while the old one keeps ticking.
 
@@ -95,11 +98,6 @@ as an error.
 
 Tracked against ADR-0001; fixes are being planned.
 
-- **The model policy is ignored.** `FREEBUFF_MODELS_FILE` and the built-in
-  order (`z-ai/glm-5.3-flash`, `mimo/mimo-v2.5`,
-  `deepseek/deepseek-v4.1-flash`) are written to freebuff's `settings.json`,
-  but CLI v0.0.188 ignores `freebuffModel` and starts its own default.
-  `status.activeModel` therefore shows the written value, not the running one.
 - **Multi-line prompts may submit early.** Prompts are typed as raw text, not
   as a bracketed paste.
 - **Freeze detection is weak.** A task counts as frozen only after 10 minutes

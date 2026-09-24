@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-
 export const QUEUE_DEPTH = 4;
 export const TASK_TIMEOUT_MS = 20 * 60_000;
 export const READY_TIMEOUT_MS = 120_000;
@@ -31,22 +29,3 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_EXIT_MS = 100;
 export const STARTUP_PIPE_WAIT_MS = 1_000;
 
-export const DEFAULT_MODELS = ['z-ai/glm-5.3-flash', 'mimo/mimo-v2.5', 'deepseek/deepseek-v4.1-flash'];
-
-const MODEL_SLUG = /^\S+\/\S+$/;
-
-export const resolveModelPolicy = (env: NodeJS.ProcessEnv = process.env): string[] => {
-  const file = env.FREEBUFF_MODELS_FILE;
-  if (file === undefined || file === '') return [...DEFAULT_MODELS];
-  let text: string;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch {
-    return [...DEFAULT_MODELS];
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const slug = line.trim();
-    if (slug !== '' && MODEL_SLUG.test(slug)) return [slug];
-  }
-  return [...DEFAULT_MODELS];
-};

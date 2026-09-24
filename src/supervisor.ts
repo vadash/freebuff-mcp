@@ -1,15 +1,14 @@
-import { mkdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { statSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { basename, join, resolve } from 'node:path';
-import { FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
+import { FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { runDoctor } from './doctor.ts';
-import { SETTINGS_FILENAME } from './protocol/markers.ts';
 import { classifyScreen } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
-import { errorMessage, readSettings } from './util.ts';
+import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
 
 export type SupervisorState = 'stopped' | 'spawning' | 'picker' | 'ready' | 'busy';
@@ -64,25 +63,19 @@ export class Supervisor {
   private boundDir: string | null = null;
   private readonly queue: QueuedTask[] = [];
   private active: QueuedTask | null = null;
-  private activeModel: string | null = null;
   private readonly driver: FreebuffDriver;
   private readonly taskTimeoutMs: number;
   private readonly freezeMs: number;
   private readonly pipeName: string;
-  private readonly configDir: string;
   private tempCounter = 0;
 
   constructor(config: SupervisorConfig = {}) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
     this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MS;
-    this.configDir = config.driver?.configDir ?? defaultDriverOptions().configDir;
     this.driver = new FreebuffDriver({
       ...(config.driver ?? defaultDriverOptions()),
       keepAlive: true,
-      onReady: () => {
-        this.activeModel = readModelSlug(this.configDir);
-      },
     });
   }
 
@@ -113,13 +106,15 @@ export class Supervisor {
         break;
       case 'status': {
         const probe = this.driver.probe();
+        // Observed on the ready Screen status line; a dead Instance observes nothing.
+        const activeModel = this.driver.isAlive() ? classifyScreen(this.driver.screenText()).activeModel : null;
         reply({
           ok: true,
           kind: 'status',
           state: this.observedState(),
           boundDir: this.boundDir,
           queueDepth: this.queue.length,
-          activeModel: this.activeModel,
+          activeModel,
           hourSessionMinutesLeft: probe.hourSessionMinutesLeft,
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),
@@ -167,7 +162,6 @@ export class Supervisor {
     this.boundDir = resolved;
     this.state = 'spawning';
     try {
-      this.activeModel = applyModelPolicy(this.configDir);
       this.state = await this.driver.awaitIdle(resolved);
       reply({ ok: true, kind: 'ok' });
     } catch (error) {
@@ -312,17 +306,11 @@ export class Supervisor {
   private async respawnDriver(): Promise<void> {
     this.state = 'spawning';
     await this.driver.stop();
-    applyModelPolicy(this.configDir);
   }
 
   private async runOne(task: QueuedTask): Promise<void> {
     let tempFile: string | null = null;
     try {
-      try {
-        this.activeModel = applyModelPolicy(this.configDir);
-      } catch (error) {
-        throw new Error(`model policy failed: ${errorMessage(error)}`);
-      }
       let prompt = task.prompt;
       if (Buffer.byteLength(prompt, 'utf8') > PASTE_THRESHOLD_BYTES) {
         tempFile = join(this.boundDir!, `.freebuff-task-${++this.tempCounter}.md`);
@@ -382,20 +370,6 @@ export class Supervisor {
     if (!socket.destroyed) socket.write(JSON.stringify(response) + '\n');
   }
 }
-
-const readModelSlug = (configDir: string): string | null => {
-  const settings = readSettings(configDir);
-  return typeof settings.freebuffModel === 'string' ? settings.freebuffModel : null;
-};
-
-const applyModelPolicy = (configDir: string): string => {
-  const [head] = resolveModelPolicy();
-  const settings = readSettings(configDir);
-  settings.freebuffModel = head;
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, SETTINGS_FILENAME), JSON.stringify(settings, null, 2));
-  return head;
-};
 
 const withTimeout = async <T>(work: Promise<T>, ms: number, message: string): Promise<T> => {
   const { promise, reject } = Promise.withResolvers<never>();

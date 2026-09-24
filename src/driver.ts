@@ -8,8 +8,8 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
+import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
+import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
 export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'lock_held' | 'needs_login';
@@ -30,7 +30,6 @@ export interface DriverOptions {
   timeouts?: { readyMs?: number; ackMs?: number };
   env?: Record<string, string>;
   keepAlive?: boolean;
-  onReady?: () => void;
 }
 
 export const resolveFreebuffCommand = (): { executable: string; argsPrefix: string[] } => {
@@ -63,6 +62,20 @@ const turnBaseline = (snaps: ChatDirSnapshot[]): TurnBaseline => {
   return newest ? { dirName: newest.dirName, logBytes: newest.logBytes } : { dirName: '', logBytes: 0 };
 };
 
+// ADR-0001 #6: first deepseek the balance can afford, else first glm, else first mimo,
+// else the top row. Case-insensitive substring in displayed order; affordability gates
+// only the deepseek candidate.
+export const pickModelIndex = (entries: PickerEntry[], balance: number | null): number => {
+  const first = (needle: string): number => entries.findIndex((entry) => entry.name.toLowerCase().includes(needle));
+  const deepseek = first('deepseek');
+  if (deepseek !== -1 && balance !== null && balance >= entries[deepseek]!.price) return deepseek;
+  const glm = first('glm');
+  if (glm !== -1) return glm;
+  const mimo = first('mimo');
+  if (mimo !== -1) return mimo;
+  return 0;
+};
+
 interface LiveInstance {
   pty: IPty;
   screen: CliTerminalScreen;
@@ -75,6 +88,7 @@ export class FreebuffDriver {
   private readonly ackMs: number;
   private readonly options: DriverOptions;
   private live: LiveInstance | null = null;
+  private dying: LiveInstance | null = null;
   private lastPainted = '';
   private loginRequired = false;
 
@@ -130,7 +144,10 @@ export class FreebuffDriver {
   kill(): void {
     const instance = this.live;
     this.live = null;
-    if (instance) instance.pty.kill();
+    if (instance) {
+      instance.pty.kill();
+      this.dying = instance;
+    }
   }
 
   async stop(timeoutMs = STOP_TIMEOUT_MS): Promise<void> {
@@ -159,7 +176,7 @@ export class FreebuffDriver {
   }
 
   async awaitIdle(dir: string): Promise<'picker' | 'ready'> {
-    const instance = this.acquire(dir);
+    const instance = await this.acquire(dir);
     return await this.waitSettled(
       instance.pty,
       instance.screen,
@@ -182,14 +199,13 @@ export class FreebuffDriver {
 
   async runTask(dir: string, prompt: string): Promise<string> {
     const chatsRoot = this.chatsRoot(dir);
-    const instance = this.acquire(dir);
+    const instance = await this.acquire(dir);
     const pty = instance.pty;
     const assertAlive = (): void => {
       if (instance.exited) throw new FreebuffDriverError('process_exited');
     };
     try {
       await this.waitSettled(pty, instance.screen, assertAlive, dir, false);
-      this.options.onReady?.();
       const baseline = turnBaseline(this.snapshot(chatsRoot));
       if (this.options.keepAlive) {
         // /new has no log-line echo, so wait for the TUI to swallow it before typing the task.
@@ -210,11 +226,19 @@ export class FreebuffDriver {
     }
   }
 
-  private acquire(dir: string): LiveInstance {
+  private async acquire(dir: string): Promise<LiveInstance> {
     if (this.options.keepAlive && this.isAlive()) {
       const instance = this.live!;
       if (instance.dir !== dir) throw new FreebuffDriverError('dir_mismatch');
       return instance;
+    }
+    // The stale-pid lock check must see the previous Instance dead before a new
+    // spawn claims the lock; a killed pty dies asynchronously.
+    const dying = this.dying;
+    this.dying = null;
+    if (dying !== null && !dying.exited) {
+      const deadline = Date.now() + STOP_TIMEOUT_MS;
+      while (!dying.exited && Date.now() < deadline) await sleep(STOP_POLL_MS);
     }
     this.claimLock();
     const pty = this.spawn(dir);
@@ -223,8 +247,12 @@ export class FreebuffDriver {
     const instance: LiveInstance = { pty, screen, exited: false, dir };
     pty.onData((chunk) => {
       screen.write(chunk);
-      const painted = screen.text();
-      if (painted.trim() !== '') this.lastPainted = painted;
+      // text() reads the buffer before the async parse queue drains, so a sync
+      // snapshot here can freeze on a stale mid-paint; re-read after the flush.
+      void screen.flush().then(() => {
+        const painted = screen.text();
+        if (painted.trim() !== '') this.lastPainted = painted;
+      });
     });
     pty.onExit(() => {
       instance.exited = true;
@@ -272,7 +300,7 @@ export class FreebuffDriver {
     const deadline = Date.now() + this.readyMs;
     let lastPickerEnterAt = 0;
     let continuePressed = false;
-    // Picker and single-instance dialog both clear on ENTER; throttle the re-entries.
+    // The single-instance dialog clears on ENTER; throttle the re-entries.
     const pressEnterWhenBlocked = (blocked: boolean): boolean => {
       if (!blocked || Date.now() - lastPickerEnterAt <= PICKER_REENTER_MS) return false;
       pty.write('\r');
@@ -307,12 +335,25 @@ export class FreebuffDriver {
         continuePressed = true;
         pty.write('\r');
         await sleep(POLL_MS);
-      } else {
-        pressEnterWhenBlocked(verdict.picker !== null);
+      } else if (verdict.picker !== null) {
+        // ADR-0001 #6: pick the model by rule instead of taking the top row.
+        if (Date.now() - lastPickerEnterAt > PICKER_REENTER_MS) {
+          await this.pickModel(pty, verdict);
+          lastPickerEnterAt = Date.now();
+        }
       }
       await sleep(POLL_MS);
     }
     throw new FreebuffDriverError('ready_timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));
+  }
+
+  private async pickModel(pty: IPty, verdict: ScreenVerdict): Promise<void> {
+    const index = pickModelIndex(verdict.entries, verdict.freebucksBalance);
+    for (let row = 0; row < index; row++) {
+      pty.write(DOWN_ARROW);
+      await sleep(TYPE_DELAY_MS);
+    }
+    pty.write('\r');
   }
 
   private async typePrompt(pty: IPty, prompt: string): Promise<void> {

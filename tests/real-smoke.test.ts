@@ -2,7 +2,6 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_MODELS } from '../src/config.ts';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
 import { sleep } from '../src/util.ts';
 import { defaultDriverOptions } from '../src/driver.ts';
@@ -28,7 +27,8 @@ const captureRawDir = join(captureCwd, 'raw');
 // Session expiry costs a real hour of wall clock; the expiring countdown shows earlier.
 const EXPIRY_WAIT_MS = 55 * 60_000;
 const COUNTDOWN_LINE = /\d+(?:m|h) left|\d+:\d\d left/;
-const headSlug = DEFAULT_MODELS[0]!;
+// ADR-0001 #6: the pick rule lands on the affordable DeepSeek row on a funded day.
+const expectedModel = 'DeepSeek V4.1 Flash';
 const trivialPrompt = 'Reply with exactly one word and nothing else: ping';
 const runTimeoutMs = 480_000;
 
@@ -109,7 +109,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     expect(done.answer).toBe(chatStoreAnswer(configDir, repoRoot));
 
     const ready = await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
-    expect(ready.activeModel, `live service rejected policy head ${headSlug}`).toBe(headSlug);
+    expect(ready.activeModel, `live service picked a model other than ${expectedModel}`).toBe(expectedModel);
 
     const firstPid = livePid(configDir);
     process.kill(firstPid, 'SIGKILL');
@@ -123,7 +123,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       runTimeoutMs,
     );
     expect(respawned.ok, respawned.error).toBe(true);
-    await pollStatus(pipeName, { state: 'ready', activeModel: headSlug, queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'ready', activeModel: expectedModel, queueDepth: 0 });
     const secondPid = livePid(configDir);
     expect(secondPid).not.toBe(firstPid);
     expect(pidAlive(secondPid), `respawned freebuff process ${secondPid} is not alive`).toBe(true);

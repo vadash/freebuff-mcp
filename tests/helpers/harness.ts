@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,21 +29,15 @@ export interface HarnessOptions extends HarnessDirs {
   delayMs?: number;
   taskTimeoutMs?: number;
   freezeMs?: number;
-  settings?: { freebuffModel: string };
-  modelsFile?: string;
   /** Extra stub environment (e.g. FREEBUFF_STUB_COUNTDOWN_MIN) merged into the driver JSON. */
   stubEnv?: Record<string, string>;
 }
 
-export const makeDirs = (settings?: { freebuffModel: string }): HarnessDirs => {
-  const configDir = mkdtempSync(join(tmpdir(), 'freebuff-sup-config-'));
-  if (settings) writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings));
-  return {
-    configDir,
-    taskDir: mkdtempSync(join(tmpdir(), 'freebuff-sup-task-')),
-    otherDir: mkdtempSync(join(tmpdir(), 'freebuff-sup-other-')),
-  };
-};
+export const makeDirs = (): HarnessDirs => ({
+  configDir: mkdtempSync(join(tmpdir(), 'freebuff-sup-config-')),
+  taskDir: mkdtempSync(join(tmpdir(), 'freebuff-sup-task-')),
+  otherDir: mkdtempSync(join(tmpdir(), 'freebuff-sup-other-')),
+});
 
 export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
   ...process.env,
@@ -64,7 +58,6 @@ export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
           },
         }),
       }),
-  ...(options.modelsFile === undefined ? {} : { FREEBUFF_MODELS_FILE: options.modelsFile }),
 });
 
 export const plainEnv = (options: HarnessOptions): Record<string, string> =>

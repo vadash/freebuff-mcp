@@ -2,7 +2,7 @@
 // exceeds hand-rolled VT support, and raw PTY history is not the visible screen.
 import headless from '@xterm/headless';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
-import { CONNECTING, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED } from './markers.ts';
+import { CONNECTING, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR } from './markers.ts';
 
 const { Terminal } = headless;
 
@@ -35,6 +35,7 @@ export interface ScreenVerdict {
   picker: 'expanded' | 'collapsed' | null;
   banner: string | null;
   entries: PickerEntry[];
+  activeModel: string | null;
   freebucksBalance: number | null;
   freebucksDaily: number | null;
   countdownMinutes: number | null;
@@ -49,6 +50,15 @@ export const countdownMinutes = (text: string): number | null => {
   const hours = match[1] !== undefined ? Number(match[1]) : 0;
   const minutes = match[2] !== undefined ? Number(match[2]) : match[3] !== undefined ? Number(match[3]) : 0;
   return hours * 60 + minutes;
+};
+
+/** Model observed on the ready status line (`Solar Mini 4 · 1h left · 12.9K (3%)`): the
+ *  segment before the first `·` on the line carrying the Countdown; null when absent. */
+export const statusModel = (text: string): string | null => {
+  const line = text.split('\n').find((candidate) => COUNTDOWN_REGEX.test(candidate) && candidate.includes(STATUS_SEPARATOR));
+  if (line === undefined) return null;
+  const model = line.slice(0, line.indexOf(STATUS_SEPARATOR)).trim();
+  return model === '' ? null : model;
 };
 
 /** Picker rows after the title: a name line, then its `<n> Freebucks/hr` price line. */
@@ -94,6 +104,7 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
     picker,
     banner,
     entries: pickerEntries(lines),
+    activeModel: statusModel(text),
     freebucksBalance: balance !== null ? Number(balance[1]) : left !== null ? Number(left[1]) : null,
     freebucksDaily: balance !== null ? Number(balance[2]) : null,
     countdownMinutes: countdownMinutes(text),

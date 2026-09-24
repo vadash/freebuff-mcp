@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +12,10 @@ const stub = fileURLToPath(new URL('./stub-freebuff.mjs', import.meta.url));
 
 const harness = (
   mode: string,
-  settings?: { freebuffModel: string },
   timeouts?: { readyMs?: number; ackMs?: number },
   opts: { stubEnv?: Record<string, string>; keepAlive?: boolean } = {},
 ) => {
   const configDir = mkdtempSync(join(tmpdir(), 'freebuff-config-'));
-  if (settings) writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings));
   const dir = mkdtempSync(join(tmpdir(), 'freebuff-task-'));
   return {
     driver: new FreebuffDriver({
@@ -34,35 +32,35 @@ const harness = (
 
 describe('FreebuffDriver', () => {
   it('resolves with the exact scripted answer on the collapsed-picker happy path', async () => {
-    const { driver, dir } = harness('happy', { freebuffModel: 'opus-test' });
-    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(opus-test): hello driver');
+    const { driver, dir } = harness('happy');
+    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello driver');
   }, 30_000);
 
   it('retries the submit once, then rejects ack-missing without hanging', async () => {
-    const { driver, dir } = harness('no-ack', { freebuffModel: 'opus-test' }, { ackMs: 500 });
+    const { driver, dir } = harness('no-ack', { ackMs: 500 });
     const started = Date.now();
     await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'ack_missing' });
     expect(Date.now() - started).toBeLessThan(10_000);
   }, 30_000);
 
-  it('dismisses the expanded picker with a single ENTER and still completes', async () => {
+  it('picks a model at the expanded picker and still completes', async () => {
     const { driver, dir } = harness('happy');
-    await expect(driver.runTask(dir, 'pick me')).resolves.toBe('stub(none): pick me');
+    await expect(driver.runTask(dir, 'pick me')).resolves.toBe('stub(DeepSeek V4.1 Flash): pick me');
   }, 30_000);
 
   it('rejects process-exited when the agent dies mid-turn', async () => {
-    const { driver, dir } = harness('kill-mid-turn', { freebuffModel: 'opus-test' });
+    const { driver, dir } = harness('kill-mid-turn');
     await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'process_exited' });
   }, 30_000);
 
   it('exposes needsLogin and rejects with needs_login when the TUI demands a login', async () => {
-    const { driver, dir } = harness('needs-login', { freebuffModel: 'opus-test' });
+    const { driver, dir } = harness('needs-login');
     await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'needs_login' });
     expect(driver.needsLogin()).toBe(true);
   }, 30_000);
 
   it('idles at the replayed picker without pressing enter and probes the balance', async () => {
-    const { driver, dir } = harness('happy', undefined, undefined, { keepAlive: true });
+    const { driver, dir } = harness('happy', undefined, { keepAlive: true });
     expect(await driver.awaitIdle(dir)).toBe('picker');
     expect(driver.screenText()).toContain('20/25 Freebucks daily');
     const verdict = classifyScreen(driver.screenText());
@@ -81,13 +79,13 @@ describe('FreebuffDriver', () => {
   }, 30_000);
 
   it('exposes the Countdown minutes from the env-controlled stub status line', async () => {
-    const { driver, dir } = harness('happy', { freebuffModel: 'opus-test' }, undefined, { stubEnv: { FREEBUFF_STUB_COUNTDOWN_MIN: '37' } });
+    const { driver, dir } = harness('happy', undefined, { stubEnv: { FREEBUFF_STUB_COUNTDOWN_MIN: '37' } });
     await driver.runTask(dir, 'count me');
     expect(driver.probe().hourSessionMinutesLeft).toBe(37);
   }, 30_000);
 
   it('replays the captured Continue screen after a turn in expire mode', async () => {
-    const { driver, dir } = harness('expire', { freebuffModel: 'opus-test' }, undefined, { keepAlive: true });
+    const { driver, dir } = harness('expire', undefined, { keepAlive: true });
     await driver.runTask(dir, 'then expire');
     const deadline = Date.now() + 5_000;
     while (!driver.screenText().includes(CONTINUE_PROMPT) && Date.now() < deadline) await sleep(100);
@@ -97,13 +95,13 @@ describe('FreebuffDriver', () => {
     expect(verdict.ready).toBe(false);
     expect(await driver.awaitIdle(dir)).toBe('picker');
     expect(driver.screenText()).toContain(CONTINUE_PROMPT);
-    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(opus-test): after continue');
+    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(DeepSeek V4.1 Flash): after continue');
     expect(driver.screenText()).not.toContain(CONTINUE_PROMPT);
     await driver.stop();
   }, 30_000);
 
   it('renders env-controlled picker entries and Freebucks balance on the replayed picker', async () => {
-    const { driver, dir } = harness('happy', undefined, undefined, {
+    const { driver, dir } = harness('happy', undefined, {
       stubEnv: {
         FREEBUFF_STUB_PICKER: JSON.stringify([{ name: 'GLM 5.3 Flash', price: 0 }, { name: 'DeepSeek V4.1 Flash', price: 5 }]),
         FREEBUFF_STUB_FREEBUCKS: '3/25',
