@@ -1,8 +1,10 @@
 // PTY driver adapted from Praket7/freebuff-mcp (MIT).
 /// <reference lib="es2024" />
+import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { promisify } from 'node:util';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
@@ -12,7 +14,7 @@ import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOG
 import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
-export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'lock_held' | 'needs_login';
+export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login';
 
 export class FreebuffDriverError extends Error {
   readonly reason: DriverFailureReason;
@@ -240,7 +242,7 @@ export class FreebuffDriver {
       const deadline = Date.now() + STOP_TIMEOUT_MS;
       while (!dying.exited && Date.now() < deadline) await sleep(STOP_POLL_MS);
     }
-    this.claimLock();
+    await this.claimLock();
     const pty = this.spawn(dir);
     const screen = new CliTerminalScreen();
     this.lastPainted = '';
@@ -261,7 +263,7 @@ export class FreebuffDriver {
     return instance;
   }
 
-  private claimLock(): void {
+  private async claimLock(): Promise<void> {
     // The real app records the live instance in the instance record; the stub and
     // older builds use the legacy lock. Dead pids never block startup.
     for (const name of [INSTANCE_RECORD_FILENAME, LOCK_FILENAME]) {
@@ -276,7 +278,11 @@ export class FreebuffDriver {
       } catch {
         continue;
       }
-      if (pid !== null && Number.isFinite(pid) && pidAlive(pid)) throw new FreebuffDriverError('lock_held');
+      if (pid !== null && Number.isFinite(pid) && pidAlive(pid)) {
+        await promisify(execFile)('taskkill', ['/PID', String(pid), '/T', '/F']).catch(() => {});
+        const deadline = Date.now() + STOP_TIMEOUT_MS;
+        while (pidAlive(pid) && Date.now() < deadline) await sleep(STOP_POLL_MS);
+      }
       rmSync(join(this.options.configDir, name), { force: true });
     }
   }

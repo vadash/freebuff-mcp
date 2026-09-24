@@ -492,19 +492,40 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(logs.join('\n').split('"msg":"thaw"').length - 1).toBeGreaterThanOrEqual(2);
   }, 90_000);
 
-  it('claims a stale pid lock and refuses to spawn while the lock holder lives', async () => {
+  it('kills the live foreign lock holder at bind and completes the task', async () => {
     const lockPath = join(dirs.configDir, 'freebuff.lock');
-    writeFileSync(lockPath, String(process.pid));
-    boot('happy');
-    await waitForPipe(pipeName, 10_000);
-    const held = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000);
-    expect(held.ok).toBe(false);
-    expect(held.error).toMatch(/lock_held/);
+    const holder = spawn(process.execPath, ['-e', 'process.stdin.resume()']);
+    const bystander = spawn(process.execPath, ['-e', 'process.stdin.resume()']);
+    const killed = Promise.withResolvers<void>();
+    holder.once('exit', () => killed.resolve());
+    try {
+      writeFileSync(lockPath, String(holder.pid));
+      boot('happy');
+      await waitForPipe(pipeName, 10_000);
+      expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000)).ok).toBe(true);
+      await killed.promise;
+      expect(bystander.exitCode).toBeNull();
+      const done = await requestPipe<{ ok: boolean; answer?: string }>(
+        pipeName,
+        { op: 'run_prompt', dir: dirs.taskDir, prompt: 'over a live holder' },
+        60_000,
+      );
+      expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): over a live holder' });
+    } finally {
+      holder.kill();
+      bystander.kill();
+    }
+  }, 60_000);
+
+  it('claims a stale pid lock and spawns', async () => {
+    const lockPath = join(dirs.configDir, 'freebuff.lock');
     const dead = spawn(process.execPath, ['-e', '']);
     const gone = Promise.withResolvers<void>();
     dead.once('exit', () => gone.resolve());
     await gone.promise;
     writeFileSync(lockPath, String(dead.pid));
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const done = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
