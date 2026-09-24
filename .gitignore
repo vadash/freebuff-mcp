@@ -1,2 +1,4 @@
 node_modules/
 dist/
+# Local scratch: real-smoke capture runs (unreviewed raw streams)
+.probe/

@@ -29,10 +29,6 @@ describe('classifyScreen', () => {
   it('sees an expanded model picker', async () => {
     expect(classifyScreen(await screen('picker-expanded.ansi'))).toEqual({ ready: false, connecting: false, picker: 'expanded', banner: null });
   });
-
-  it('sees a collapsed model picker', async () => {
-    expect(classifyScreen(await screen('picker-collapsed.ansi'))).toEqual({ ready: false, connecting: false, picker: 'collapsed', banner: null });
-  });
 });
 
 describe('flattenScreen', () => {

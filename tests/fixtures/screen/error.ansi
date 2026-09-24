@@ -13,11 +13,6 @@
 
 
 
-
-
-
-
-
  ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ You started Freebuff in a subdirectory of a git repo.                                                                                                   x │
  │ Switch to git root (C:\projects\_llm\freebuff-mcp)                                                                                                        │
@@ -40,6 +35,11 @@
 
   pong
                                                                                                                                                   ⎘ • 2s • △▽
+
+   [02:49 PM]
+   /definitely-not-a-freebuff-command ⎘
+
+  Command not found: "/definitely-not-a-freebuff-command"
  Solar Mini 4 · 1h left · 12.9K (3%)                                                                                                             ✕ End session
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                                                                              │
