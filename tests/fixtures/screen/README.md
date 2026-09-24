@@ -1,8 +1,11 @@
 # Real screen fixtures
 
 These fixtures are captured from the real freebuff CLI, not written by hand. They back
-`src/protocol/markers.ts` and the screen-classification tests. The stub freebuff does not
-replay these captures yet — its wording is hand-synced until it does.
+`src/protocol/markers.ts` and the screen-classification tests. The stub freebuff
+(`tests/stub-freebuff.mjs`) replays `picker-expanded.ansi` and `continue.ansi` verbatim
+(with env-overridable balance numbers and picker rows), so the stub cannot drift from the
+real wording; its ready-box status line uses the captured Countdown formats with an env
+control for the minutes.
 
 `banner-ready`, `connecting*`, `login-required`, `partial-line`, `repaint` and
 `split-escape` are NOT protocol captures: they are hand-made emulator test vectors for
@@ -99,12 +102,15 @@ supervisor confirms this screen lazily, only when the next task arrives. Countdo
 seen in the raw stream (`continue.raw.ansi`) on the way to expiry: `1h 1m left`, `59m left`,
 `9m left`, `1m left`, then `m:ss left` from exactly 5:00 down, repainting every second —
 too fast for the capture helper's 1.5s stability window, so no separate
-`countdown-expiring.ansi` exists; the formats above are the spec for the next ticket.
+`countdown-expiring.ansi` exists; the formats above are now the `COUNTDOWN_REGEX` wording
+in `src/protocol/markers.ts`.
 
 ## low-freebucks.ansi
 
-Not committed: the exhausted-balance state could not be reached programmatically. The
-opt-in drain variant
+Not committed: the exhausted-balance state could not be reached programmatically. There is
+therefore NO low-Freebucks literal in `markers.ts`: the low state is the captured balance
+format showing a left number (`0/25`, `0/40`) below a model's price, not a separate screen
+string. The opt-in drain variant
 (`FREEBUFF_REAL_SMOKE=1 FREEBUFF_CAPTURE=1 FREEBUFF_LOW_CAPTURE=1 npx vitest run tests/real-smoke.test.ts -t "captures the low-Freebucks screen"`)
 is ready and does: pick DeepSeek (5 Freebucks/hr) → wait for the session status line →
 click the `✕ End session` status-bar button → re-read the balance — repeated while the

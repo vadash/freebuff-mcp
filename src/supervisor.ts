@@ -38,7 +38,7 @@ export interface StatusPayload {
   queueDepth: number;
   activeModel: string | null;
   trialMinutesLeft: number | null;
-  freebucksDaily: string | null;
+  freebucksDaily: number | null;
   needsLogin: boolean;
   updatePending: { running: string; onDisk: string } | null;
 }

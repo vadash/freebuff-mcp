@@ -466,23 +466,29 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(done).toMatchObject({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): stale ok' });
   }, 60_000);
 
-  it('reports trial, freebucks, and update fields on status', async () => {
+  it('reports countdown, freebucks, and update fields on status', async () => {
     writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.190' }));
-    boot('happy');
+    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 2500, settings: { freebuffModel: 'opus-test' }, ...dirs });
     await waitForPipe(pipeName, 10_000);
     const before = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
     expect(before).toMatchObject({ trialMinutesLeft: null, freebucksDaily: null, needsLogin: false, updatePending: null });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    await requestPipe<{ ok: boolean; answer?: string }>(
+    const task = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'status fields' },
       30_000,
     );
+    await pollStatus(pipeName, { state: 'busy' });
+    // While the ready box is up the Countdown ticks; the balance line is only on the picker.
+    const busy = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    expect(busy).toMatchObject({ trialMinutesLeft: 432, freebucksDaily: null });
+    await task;
+    // Idling at the replayed Model picker: no Countdown on screen, balance visible.
     await pollStatus(pipeName, { state: 'parked' });
     const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
     expect(status).toMatchObject({
-      trialMinutesLeft: 432,
-      freebucksDaily: '25/25',
+      trialMinutesLeft: null,
+      freebucksDaily: 25,
       needsLogin: false,
       updatePending: { running: '0.0.186', onDisk: '0.0.190' },
     });

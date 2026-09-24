@@ -45,7 +45,8 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
   freebuff is relaunched in that directory. The Supervisor never ends one
   early. Code: `hourSession`. _Avoid:_ "trial session", "trial clock",
   bare "session".
-- **Countdown**: the `min left` line on the Screen, i.e. minutes left in the
+- **Countdown**: the minutes-left marker on the Screen's status line
+  (`7h 12m left`, `1h left`, `59m left`, `2:58 left`), i.e. minutes left in the
   Hour session.
 - **Freebucks**: freebuff's daily allowance (25 or 40). Starting an Hour
   session costs the picked model's price (e.g. 0/5/10).

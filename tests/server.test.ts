@@ -67,6 +67,10 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(completions).toEqual(['stub(z-ai/glm-5.3-flash): task one', 'stub(z-ai/glm-5.3-flash): task two']);
     const status = await pollStatus(pipeName, { state: 'parked', activeModel: 'z-ai/glm-5.3-flash', queueDepth: 0 });
     expect(status.boundDir).toContain('freebuff-sup-task-');
+    // Contract (issue #11): the status tool reports the daily allowance as a number.
+    const toolStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
+    expect(typeof toolStatus.freebucksDaily).toBe('number');
+    expect(toolStatus.freebucksDaily).toBe(25);
     const chatDirs = readdirSync(chatsRoot(dirs.configDir, dirs.taskDir));
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
     for (const dir of chatDirs) expect(dir.startsWith('chat-new-')).toBe(true);

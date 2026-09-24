@@ -8,7 +8,7 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, COUNTDOWN_REGEX, END_SESSION_COMMAND, FREEBUCKS_DAILY_REGEX, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
+import { CHATS_DIRNAME, END_SESSION_COMMAND, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
@@ -100,14 +100,13 @@ export class FreebuffDriver {
 
   probe(): {
     hourSessionMinutesLeft: number | null;
-    freebucksDaily: string | null;
+    freebucksBalance: number | null;
+    freebucksDaily: number | null;
     runningVersion: string | null;
     onDiskVersion: string | null;
   } {
     const text = this.screenText();
-    const countdown = COUNTDOWN_REGEX.exec(text);
-    const daily = FREEBUCKS_DAILY_REGEX.exec(text);
-    const running = VERSION_BANNER_REGEX.exec(text);
+    const verdict = classifyScreen(text);
     let onDiskVersion: string | null = null;
     try {
       const meta = JSON.parse(readFileSync(join(this.options.configDir, METADATA_FILENAME), 'utf8')) as { version?: unknown };
@@ -116,9 +115,10 @@ export class FreebuffDriver {
       onDiskVersion = null;
     }
     return {
-      hourSessionMinutesLeft: countdown === null ? null : Number(countdown[1]),
-      freebucksDaily: daily === null ? null : daily[1],
-      runningVersion: running === null ? null : running[1],
+      hourSessionMinutesLeft: verdict.countdownMinutes,
+      freebucksBalance: verdict.freebucksBalance,
+      freebucksDaily: verdict.freebucksDaily,
+      runningVersion: VERSION_BANNER_REGEX.exec(text)?.[1] ?? null,
       onDiskVersion,
     };
   }

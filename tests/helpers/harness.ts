@@ -31,6 +31,8 @@ export interface HarnessOptions extends HarnessDirs {
   freezeMs?: number;
   settings?: { freebuffModel: string };
   modelsFile?: string;
+  /** Extra stub environment (e.g. FREEBUFF_STUB_COUNTDOWN_MIN) merged into the driver JSON. */
+  stubEnv?: Record<string, string>;
 }
 
 export const makeDirs = (settings?: { freebuffModel: string }): HarnessDirs => {
@@ -58,6 +60,7 @@ export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
           env: {
             FREEBUFF_STUB_MODE: options.mode,
             ...(options.delayMs === undefined ? {} : { FREEBUFF_STUB_DELAY_MS: String(options.delayMs) }),
+            ...(options.stubEnv ?? {}),
           },
         }),
       }),
