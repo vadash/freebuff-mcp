@@ -9,11 +9,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type IPty } from 'node-pty';
 import { SCREEN_COLS, SCREEN_ROWS } from '../../src/config.ts';
-import { sleep } from '../../src/ipc.ts';
+import { sleep } from '../../src/util.ts';
 import { CHATS_DIRNAME, CONNECTING, LOG_FILENAME, LOGIN_REQUIRED, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE, TURN_END_MSG } from '../../src/protocol/markers.ts';
 import { projectKey, type ChatDirSnapshot } from '../../src/protocol/chatStore.ts';
 import { classifyScreen, CliTerminalScreen } from '../../src/protocol/screen.ts';
-import { defaultDriverOptions } from '../../src/supervisor.ts';
+import { defaultDriverOptions } from '../../src/driver.ts';
 
 // Real TUIs repaint in bursts (spinner, status line); require the wanted screen to hold
 // still briefly so fixtures capture the settled frame.
@@ -185,7 +185,7 @@ export class RealCli {
 
 /** Chats root of the real CLI (launcher-installed 0.0.193: ~/.config/manicode/projects/<basename>/chats). */
 export const realChatsRoot = (cwd: string): string =>
-  join(homedir(), '.config', 'manicode', PROJECTS_DIRNAME, projectKey(cwd, cwd), CHATS_DIRNAME);
+  join(homedir(), '.config', 'manicode', PROJECTS_DIRNAME, projectKey(cwd), CHATS_DIRNAME);
 
 export const snapshotChats = (root: string): ChatDirSnapshot[] => {
   let names: string[];

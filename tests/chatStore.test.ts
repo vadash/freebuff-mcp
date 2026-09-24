@@ -15,11 +15,11 @@ const baselineOf = (s: ChatDirSnapshot): TurnBaseline => ({ dirName: s.dirName, 
 
 describe('projectKey', () => {
   it('keys the chat store by the plain basename', () => {
-    expect(projectKey('demo-app', 'C:/work/demo-app')).toBe('demo-app');
+    expect(projectKey('C:/work/demo-app')).toBe('demo-app');
   });
 
   it('accepts basename collisions across parents (issue #1)', () => {
-    expect(projectKey('demo-app', 'C:/work/demo-app')).toBe(projectKey('demo-app', 'D:/elsewhere/demo-app'));
+    expect(projectKey('C:/work/demo-app')).toBe(projectKey('D:/elsewhere/demo-app'));
   });
 });
 

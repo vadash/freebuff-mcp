@@ -73,10 +73,10 @@ Failed calls return `isError: true` with a message. Driver failures read
 |---|---|
 | `needs_login` | Run `freebuff login` yourself; never retried automatically. |
 | `lock_held` | Another live freebuff holds the single-instance lock. |
-| `dir-mismatch` | freebuff came up in a different directory than the bound one. |
-| `ready-timeout` | freebuff never reached its input box (includes a screen excerpt). |
-| `ack-missing` | freebuff did not record the prompt, even after one retry. |
-| `process-exited` | freebuff exited; the watchdog respawns it and resends the prompt, up to 2 times. |
+| `dir_mismatch` | freebuff came up in a different directory than the bound one. |
+| `ready_timeout` | freebuff never reached its input box (includes a screen excerpt). |
+| `ack_missing` | freebuff did not record the prompt, even after one retry. |
+| `process_exited` | freebuff exited; the watchdog respawns it and resends the prompt, up to 2 times. |
 
 A full queue returns `{ "busy": true, "position": N }`, currently not flagged
 as an error.

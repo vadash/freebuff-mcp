@@ -1,16 +1,18 @@
 // PTY driver adapted from Praket7/freebuff-mcp (MIT).
 /// <reference lib="es2024" />
-import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, PICKER_REENTER_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS } from './config.ts';
+import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE } from './protocol/markers.ts';
+import { CHATS_DIRNAME, COUNTDOWN_REGEX, END_SESSION_COMMAND, FREEBUCKS_DAILY_REGEX, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
+import { sleep } from './util.ts';
 
-export type DriverFailureReason = 'ready-timeout' | 'dir-mismatch' | 'ack-missing' | 'process-exited' | 'lock_held' | 'needs_login';
+export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'lock_held' | 'needs_login';
 
 export class FreebuffDriverError extends Error {
   readonly reason: DriverFailureReason;
@@ -31,16 +33,21 @@ export interface DriverOptions {
   onReady?: () => void;
 }
 
-const POLL_MS = 250;
-const TYPE_DELAY_MS = 150;
-// /new has no log-line echo, so wait for the TUI to swallow it before typing the task.
-const NEW_SETTLE_MS = 300;
-
-const sleep = (ms: number): Promise<void> => {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
+export const resolveFreebuffCommand = (): { executable: string; argsPrefix: string[] } => {
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue;
+    if (existsSync(join(dir, 'freebuff.exe'))) return { executable: join(dir, 'freebuff.exe'), argsPrefix: [] };
+    if (existsSync(join(dir, 'freebuff.cmd'))) {
+      return { executable: process.execPath, argsPrefix: [join(dir, 'node_modules', 'freebuff', 'index.js')] };
+    }
+  }
+  return { executable: 'freebuff', argsPrefix: [] };
 };
+
+export const defaultDriverOptions = (): DriverOptions => ({
+  ...resolveFreebuffCommand(),
+  configDir: join(homedir(), '.config', 'manicode'),
+});
 
 const pidAlive = (pid: number): boolean => {
   try {
@@ -56,18 +63,18 @@ const turnBaseline = (snaps: ChatDirSnapshot[]): TurnBaseline => {
   return newest ? { dirName: newest.dirName, logBytes: newest.logBytes } : { dirName: '', logBytes: 0 };
 };
 
-interface LiveSession {
+interface LiveInstance {
   pty: IPty;
   screen: CliTerminalScreen;
   exited: boolean;
-  cwd: string;
+  dir: string;
 }
 
 export class FreebuffDriver {
   private readonly readyMs: number;
   private readonly ackMs: number;
   private readonly options: DriverOptions;
-  private live: LiveSession | null = null;
+  private live: LiveInstance | null = null;
   private lastPainted = '';
   private loginRequired = false;
 
@@ -92,114 +99,111 @@ export class FreebuffDriver {
   }
 
   probe(): {
-    trialMinutesLeft: number | null;
+    hourSessionMinutesLeft: number | null;
     freebucksDaily: string | null;
     runningVersion: string | null;
     onDiskVersion: string | null;
   } {
     const text = this.screenText();
-    const trial = /(\d+)\s*min\s+left/i.exec(text);
-    const daily = /Daily\s+Freebucks:\s*(\S+)/i.exec(text);
-    const running = /freebuff\s+v(\S+)/i.exec(text);
+    const countdown = COUNTDOWN_REGEX.exec(text);
+    const daily = FREEBUCKS_DAILY_REGEX.exec(text);
+    const running = VERSION_BANNER_REGEX.exec(text);
     let onDiskVersion: string | null = null;
     try {
-      const meta = JSON.parse(readFileSync(join(this.options.configDir, 'freebuff-metadata.json'), 'utf8')) as { version?: unknown };
+      const meta = JSON.parse(readFileSync(join(this.options.configDir, METADATA_FILENAME), 'utf8')) as { version?: unknown };
       if (typeof meta.version === 'string') onDiskVersion = meta.version;
     } catch {
       onDiskVersion = null;
     }
     return {
-      trialMinutesLeft: trial === null ? null : Number(trial[1]),
+      hourSessionMinutesLeft: countdown === null ? null : Number(countdown[1]),
       freebucksDaily: daily === null ? null : daily[1],
       runningVersion: running === null ? null : running[1],
       onDiskVersion,
     };
   }
 
-  newestLogSize(cwd: string): number {
-    const snaps = this.snapshot(this.chatsRoot(cwd));
-    return snaps.reduce<ChatDirSnapshot | null>(
-      (newest, snap) => (newest === null || byNewest(snap, newest) > 0 ? snap : newest),
-      null,
-    )?.logBytes ?? 0;
+  newestLogSize(dir: string): number {
+    return newestChatDir(this.snapshot(this.chatsRoot(dir)))?.logBytes ?? 0;
   }
 
   kill(): void {
-    const session = this.live;
+    const instance = this.live;
     this.live = null;
-    if (session) session.pty.kill();
+    if (instance) instance.pty.kill();
   }
 
-  async stop(timeoutMs = 5_000): Promise<void> {
-    const session = this.live;
+  async stop(timeoutMs = STOP_TIMEOUT_MS): Promise<void> {
+    const instance = this.live;
     this.kill();
     const deadline = Date.now() + timeoutMs;
-    while (session && !session.exited && Date.now() < deadline) await sleep(50);
+    while (instance && !instance.exited && Date.now() < deadline) await sleep(STOP_POLL_MS);
   }
 
   async cancelActive(): Promise<void> {
-    const session = this.live;
-    if (!session || session.exited) {
+    const instance = this.live;
+    if (!instance || instance.exited) {
       this.kill();
       return;
     }
-    session.pty.write('\x1b');
+    instance.pty.write('\x1b');
     await sleep(TYPE_DELAY_MS);
-    session.pty.write('\x03');
+    instance.pty.write('\x03');
     const deadline = Date.now() + STOP_GRACE_MS;
     while (Date.now() < deadline) {
-      if (session.exited) break;
-      if (classifyScreen(session.screen.text()).picker !== null) break;
+      if (instance.exited) break;
+      if (classifyScreen(instance.screen.text()).picker !== null) break;
       await sleep(POLL_MS);
     }
     this.kill();
   }
 
   async park(): Promise<void> {
-    const session = this.live;
-    if (!session || session.exited) return;
-    const stale = session.screen.text();
-    session.pty.write('/end-session');
+    const instance = this.live;
+    if (!instance || instance.exited) return;
+    const stale = instance.screen.text();
+    instance.pty.write(END_SESSION_COMMAND);
     await sleep(TYPE_DELAY_MS);
-    session.pty.write('\r');
+    instance.pty.write('\r');
     const deadline = Date.now() + this.readyMs;
     while (Date.now() < deadline) {
-      if (session.exited) throw new FreebuffDriverError('process-exited');
-      const text = session.screen.text();
+      if (instance.exited) throw new FreebuffDriverError('process_exited');
+      const text = instance.screen.text();
       if (text !== stale && !text.includes(READY_PROMPT) && classifyScreen(text).picker !== null) return;
       await sleep(POLL_MS);
     }
-    throw new FreebuffDriverError('ready-timeout');
+    throw new FreebuffDriverError('ready_timeout');
   }
 
-  private chatsRoot(cwd: string): string {
+  private chatsRoot(dir: string): string {
     return join(
       this.options.configDir,
       PROJECTS_DIRNAME,
-      projectKey(cwd, resolve(cwd)),
+      projectKey(dir),
       CHATS_DIRNAME,
     );
   }
 
-  async runTask(cwd: string, prompt: string): Promise<string> {
-    const chatsRoot = this.chatsRoot(cwd);
-    const session = this.acquire(cwd);
-    const pty = session.pty;
+  async runTask(dir: string, prompt: string): Promise<string> {
+    const chatsRoot = this.chatsRoot(dir);
+    const instance = this.acquire(dir);
+    const pty = instance.pty;
     const assertAlive = (): void => {
-      if (session.exited) throw new FreebuffDriverError('process-exited');
+      if (instance.exited) throw new FreebuffDriverError('process_exited');
     };
     try {
-      await this.waitReady(pty, session.screen, assertAlive, cwd);
+      await this.waitReady(pty, instance.screen, assertAlive, dir);
       this.options.onReady?.();
       const baseline = turnBaseline(this.snapshot(chatsRoot));
       if (this.options.keepAlive) {
-        await this.typePrompt(pty, '/new');
+        // /new has no log-line echo, so wait for the TUI to swallow it before typing the task.
+        await this.typePrompt(pty, NEW_COMMAND);
         await sleep(NEW_SETTLE_MS);
       }
       await this.typePrompt(pty, prompt);
       if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) {
         await this.typePrompt(pty, prompt);
-        if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack-missing');
+        if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack_missing');
       }
       return await this.awaitTurnEnd(chatsRoot, baseline, assertAlive);
     } catch (error) {
@@ -210,33 +214,33 @@ export class FreebuffDriver {
     }
   }
 
-  private acquire(cwd: string): LiveSession {
+  private acquire(dir: string): LiveInstance {
     if (this.options.keepAlive && this.isAlive()) {
-      const session = this.live!;
-      if (session.cwd !== cwd) throw new FreebuffDriverError('dir-mismatch');
-      return session;
+      const instance = this.live!;
+      if (instance.dir !== dir) throw new FreebuffDriverError('dir_mismatch');
+      return instance;
     }
     this.claimLock();
-    const pty = this.spawn(cwd);
+    const pty = this.spawn(dir);
     const screen = new CliTerminalScreen();
     this.lastPainted = '';
-    const session: LiveSession = { pty, screen, exited: false, cwd };
+    const instance: LiveInstance = { pty, screen, exited: false, dir };
     pty.onData((chunk) => {
       screen.write(chunk);
       const painted = screen.text();
       if (painted.trim() !== '') this.lastPainted = painted;
     });
     pty.onExit(() => {
-      session.exited = true;
+      instance.exited = true;
     });
-    if (this.options.keepAlive) this.live = session;
-    return session;
+    if (this.options.keepAlive) this.live = instance;
+    return instance;
   }
 
   private claimLock(): void {
-    // The real app records the live instance in freebuff-instance-owner.json; the stub and
-    // older builds use freebuff.lock. Dead pids never block startup.
-    for (const name of ['freebuff-instance-owner.json', 'freebuff.lock']) {
+    // The real app records the live instance in the instance record; the stub and
+    // older builds use the legacy lock. Dead pids never block startup.
+    for (const name of [INSTANCE_RECORD_FILENAME, LOCK_FILENAME]) {
       let pid: number | null = null;
       try {
         const raw: unknown = JSON.parse(readFileSync(join(this.options.configDir, name), 'utf8').trim());
@@ -253,12 +257,12 @@ export class FreebuffDriver {
     }
   }
 
-  private spawn(cwd: string): IPty {
-    return spawn(this.options.executable, [...(this.options.argsPrefix ?? []), '--cwd', cwd], {
+  private spawn(dir: string): IPty {
+    return spawn(this.options.executable, [...(this.options.argsPrefix ?? []), '--cwd', dir], {
       name: 'xterm-256color',
       cols: SCREEN_COLS,
       rows: SCREEN_ROWS,
-      cwd,
+      cwd: dir,
       env: {
         ...process.env,
         ...this.options.env,
@@ -268,9 +272,16 @@ export class FreebuffDriver {
     });
   }
 
-  private async waitReady(pty: IPty, screen: CliTerminalScreen, assertAlive: () => void, cwd: string): Promise<void> {
+  private async waitReady(pty: IPty, screen: CliTerminalScreen, assertAlive: () => void, dir: string): Promise<void> {
     const deadline = Date.now() + this.readyMs;
     let lastPickerEnterAt = 0;
+    // Picker and single-instance dialog both clear on ENTER; throttle the re-entries.
+    const pressEnterWhenBlocked = (blocked: boolean): boolean => {
+      if (!blocked || Date.now() - lastPickerEnterAt <= PICKER_REENTER_MS) return false;
+      pty.write('\r');
+      lastPickerEnterAt = Date.now();
+      return true;
+    };
     while (Date.now() < deadline) {
       assertAlive();
       const text = screen.text();
@@ -278,25 +289,20 @@ export class FreebuffDriver {
         this.loginRequired = true;
         throw new FreebuffDriverError('needs_login');
       }
-      if (text.includes(SINGLE_INSTANCE) && Date.now() - lastPickerEnterAt > PICKER_REENTER_MS) {
-        pty.write('\r');
-        lastPickerEnterAt = Date.now();
+      if (pressEnterWhenBlocked(text.includes(SINGLE_INSTANCE))) {
         await sleep(POLL_MS);
         continue;
       }
-      const verdict = classifyScreen(text, cwd);
+      const verdict = classifyScreen(text, dir);
       if (verdict.ready) {
-        if (verdict.banner === null) throw new FreebuffDriverError('dir-mismatch');
+        if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
         this.loginRequired = false;
         return;
       }
-      if (verdict.picker !== null && Date.now() - lastPickerEnterAt > PICKER_REENTER_MS) {
-        pty.write('\r');
-        lastPickerEnterAt = Date.now();
-      }
+      pressEnterWhenBlocked(verdict.picker !== null);
       await sleep(POLL_MS);
     }
-    throw new FreebuffDriverError('ready-timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));
+    throw new FreebuffDriverError('ready_timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));
   }
 
   private async typePrompt(pty: IPty, prompt: string): Promise<void> {

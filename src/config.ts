@@ -6,13 +6,30 @@ export const READY_TIMEOUT_MS = 120_000;
 export const ACK_TIMEOUT_MS = 20_000;
 export const PASTE_THRESHOLD_BYTES = 64 * 1024;
 export const STOP_GRACE_MS = 2_000;
+export const STOP_TIMEOUT_MS = 5_000;
 export const PICKER_REENTER_MS = 3_000;
 export const FREEZE_THRESHOLD_MINUTES = 10;
+export const FREEZE_THRESHOLD_MS = FREEZE_THRESHOLD_MINUTES * 60_000;
+export const FREEZE_POLL_MAX_MS = 1_000;
+export const FREEZE_POLL_MIN_MS = 50;
 export const MAX_TASK_RESPAWNS = 2;
-export const PARK_IMMEDIATELY_AFTER_TASK = true;
 export const SCREEN_ROWS = 48;
 export const SCREEN_COLS = 160;
 export const SUPERVISOR_PIPE = '\\\\.\\pipe\\freebuff-supervisor';
+
+// Driver polling and typing cadence.
+export const POLL_MS = 250;
+export const TYPE_DELAY_MS = 150;
+export const NEW_SETTLE_MS = 300;
+export const STOP_POLL_MS = 50;
+
+// Named-pipe transport and entry-point timings.
+export const PIPE_PROBE_TIMEOUT_MS = 250;
+export const PIPE_POLL_MS = 100;
+export const PIPE_CONNECT_TIMEOUT_MS = 5_000;
+export const REQUEST_TIMEOUT_MS = 30_000;
+export const SHUTDOWN_EXIT_MS = 100;
+export const STARTUP_PIPE_WAIT_MS = 1_000;
 
 export const DEFAULT_MODELS = ['z-ai/glm-5.3-flash', 'mimo/mimo-v2.5', 'deepseek/deepseek-v4.1-flash'];
 

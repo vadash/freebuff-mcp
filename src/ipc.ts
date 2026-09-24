@@ -1,10 +1,6 @@
 import { connect, type Socket } from 'node:net';
-
-export const sleep = (ms: number): Promise<void> => {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-};
+import { PIPE_CONNECT_TIMEOUT_MS, PIPE_POLL_MS, PIPE_PROBE_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from './config.ts';
+import { sleep } from './util.ts';
 
 export const pipeReachable = (pipeName: string, timeoutMs: number): Promise<boolean> => {
   const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -23,13 +19,13 @@ export const pipeReachable = (pipeName: string, timeoutMs: number): Promise<bool
 export const waitForPipe = async (pipeName: string, timeoutMs: number): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (await pipeReachable(pipeName, 250)) return;
+    if (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS)) return;
     if (Date.now() > deadline) throw new Error(`pipe ${pipeName} never became reachable within ${timeoutMs}ms`);
-    await sleep(100);
+    await sleep(PIPE_POLL_MS);
   }
 };
 
-const openPipe = (pipeName: string, timeoutMs = 5_000): Promise<Socket> => {
+const openPipe = (pipeName: string, timeoutMs = PIPE_CONNECT_TIMEOUT_MS): Promise<Socket> => {
   const { promise, resolve, reject } = Promise.withResolvers<Socket>();
   const socket = connect(pipeName);
   const timer = setTimeout(() => {
@@ -67,7 +63,7 @@ const firstLine = (socket: Socket, timeoutMs: number, action: (socket: Socket) =
   return promise;
 };
 
-export const requestPipe = async <T>(pipeName: string, request: unknown, timeoutMs = 30_000): Promise<T> => {
+export const requestPipe = async <T>(pipeName: string, request: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> => {
   const socket = await openPipe(pipeName);
   try {
     return JSON.parse(await firstLine(socket, timeoutMs, (s) => s.write(JSON.stringify(request) + '\n'))) as T;
@@ -76,7 +72,7 @@ export const requestPipe = async <T>(pipeName: string, request: unknown, timeout
   }
 };
 
-export const sendRawLine = async (pipeName: string, line: string, timeoutMs = 5_000): Promise<string> => {
+export const sendRawLine = async (pipeName: string, line: string, timeoutMs = PIPE_CONNECT_TIMEOUT_MS): Promise<string> => {
   const socket = await openPipe(pipeName);
   try {
     return await firstLine(socket, timeoutMs, (s) => s.write(line + '\n'));

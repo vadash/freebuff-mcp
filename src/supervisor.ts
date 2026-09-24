@@ -1,14 +1,15 @@
-import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
-import { homedir } from 'node:os';
-import { basename, delimiter, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { FREEZE_THRESHOLD_MINUTES, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, QUEUE_DEPTH, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
-import { FreebuffDriver } from './driver.ts';
+import { basename, join, resolve } from 'node:path';
+import { FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS, resolveModelPolicy } from './config.ts';
+import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { runDoctor } from './doctor.ts';
+import { SETTINGS_FILENAME } from './protocol/markers.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
+import { errorMessage, readSettings } from './util.ts';
+import { isMainModule, mainOptions } from './entry.ts';
 
 export type SupervisorState = 'idle' | 'spawning' | 'busy' | 'parked';
 
@@ -28,23 +29,27 @@ export type SupervisorRequest =
   | { op: 'doctor' }
   | { op: 'shutdown' };
 
+// The status field list is defined once, here. Field names are the public wire
+// contract; `trialMinutesLeft` keeps its wire name even though the domain name
+// is Hour session (a later contract ticket renames it).
+export interface StatusPayload {
+  state: SupervisorState;
+  boundDir: string | null;
+  queueDepth: number;
+  activeModel: string | null;
+  trialMinutesLeft: number | null;
+  freebucksDaily: string | null;
+  needsLogin: boolean;
+  updatePending: { running: string; onDisk: string } | null;
+}
+
 export type SupervisorResponse =
-  | { ok: true }
-  | { ok: true; answer: string }
-  | {
-      ok: true;
-      state: SupervisorState;
-      boundDir: string | null;
-      queueDepth: number;
-      activeModel: string | null;
-      trialMinutesLeft: number | null;
-      freebucksDaily: string | null;
-      needsLogin: boolean;
-      updatePending: { running: string; onDisk: string } | null;
-    }
-  | { ok: false; error: string }
-  | { ok: false; busy: true; position: number; error: string }
-  | { ok: true; failures: string[] };
+  | { ok: true; kind: 'ok' }
+  | { ok: true; kind: 'answer'; answer: string }
+  | ({ ok: true; kind: 'status' } & StatusPayload)
+  | { ok: true; kind: 'doctor'; failures: string[] }
+  | { ok: false; kind: 'error'; error: string }
+  | { ok: false; kind: 'busy'; busy: true; position: number; error: string };
 
 interface QueuedTask {
   prompt: string;
@@ -53,22 +58,6 @@ interface QueuedTask {
 }
 
 const FROZEN = Symbol('frozen');
-
-export const defaultDriverOptions = (): DriverOptions => ({
-  ...resolveFreebuffCommand(),
-  configDir: join(homedir(), '.config', 'manicode'),
-});
-
-const resolveFreebuffCommand = (): { executable: string; argsPrefix: string[] } => {
-  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-    if (!dir) continue;
-    if (existsSync(join(dir, 'freebuff.exe'))) return { executable: join(dir, 'freebuff.exe'), argsPrefix: [] };
-    if (existsSync(join(dir, 'freebuff.cmd'))) {
-      return { executable: process.execPath, argsPrefix: [join(dir, 'node_modules', 'freebuff', 'index.js')] };
-    }
-  }
-  return { executable: 'freebuff', argsPrefix: [] };
-};
 
 export class Supervisor {
   private state: SupervisorState = 'idle';
@@ -86,7 +75,7 @@ export class Supervisor {
   constructor(config: SupervisorConfig = {}) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
-    this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MINUTES * 60_000;
+    this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MS;
     this.configDir = config.driver?.configDir ?? defaultDriverOptions().configDir;
     this.driver = new FreebuffDriver({
       ...(config.driver ?? defaultDriverOptions()),
@@ -121,17 +110,18 @@ export class Supervisor {
         await this.cancelTask(reply);
         break;
       case 'new_session':
-        reply(this.newSession());
+        reply(this.newConversation());
         break;
       case 'status': {
         const probe = this.driver.probe();
         reply({
           ok: true,
+          kind: 'status',
           state: this.state,
           boundDir: this.boundDir,
           queueDepth: this.queue.length,
           activeModel: this.activeModel,
-          trialMinutesLeft: probe.trialMinutesLeft,
+          trialMinutesLeft: probe.hourSessionMinutesLeft,
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),
           updatePending:
@@ -144,15 +134,15 @@ export class Supervisor {
         break;
       }
       case 'doctor':
-        reply({ ok: true, failures: (await runDoctor()).failures });
+        reply({ ok: true, kind: 'doctor', failures: (await runDoctor()).failures });
         break;
       case 'shutdown':
         this.driver.kill();
-        reply({ ok: true });
-        setTimeout(() => process.exit(0), 100).unref();
+        reply({ ok: true, kind: 'ok' });
+        setTimeout(() => process.exit(0), SHUTDOWN_EXIT_MS).unref();
         break;
       default:
-        reply({ ok: false, error: `unsupported op: ${JSON.stringify(request)}` });
+        reply({ ok: false, kind: 'error', error: `unsupported op: ${JSON.stringify(request)}` });
         break;
     }
   };
@@ -160,57 +150,58 @@ export class Supervisor {
   private bind(dir: string): SupervisorResponse {
     // Issue #5: a rebind is blocked only by an active task; queued tasks are purged.
     if (this.active !== null) {
-      return { ok: false, error: 'bind rejected: a task is active' };
+      return { ok: false, kind: 'error', error: 'bind rejected: a task is active' };
     }
     for (const task of this.queue.splice(0)) {
-      task.reply({ ok: false, error: 'rebind purged this queued task: the directory was rebound' });
+      task.reply({ ok: false, kind: 'error', error: 'rebind purged this queued task: the directory was rebound' });
     }
     let resolved: string;
     try {
       resolved = resolve(dir);
       if (!statSync(resolved).isDirectory()) throw new Error('not a directory');
     } catch {
-      return { ok: false, error: `bind failed: ${dir} is not an existing directory` };
+      return { ok: false, kind: 'error', error: `bind failed: ${dir} is not an existing directory` };
     }
     this.driver.kill();
     this.boundDir = resolved;
     this.state = 'idle';
-    return { ok: true };
+    return { ok: true, kind: 'ok' };
   }
 
   private async cancelTask(reply: (response: SupervisorResponse) => void): Promise<void> {
     const task = this.active;
     if (task === null || this.state !== 'busy') {
-      reply({ ok: false, error: 'cancel_task failed: no task is active' });
+      reply({ ok: false, kind: 'error', error: 'cancel_task failed: no task is active' });
       return;
     }
     task.cancelled = true;
     await this.driver.cancelActive();
-    reply({ ok: true });
+    reply({ ok: true, kind: 'ok' });
   }
 
-  private newSession(): SupervisorResponse {
+  private newConversation(): SupervisorResponse {
     if (this.active !== null || this.queue.length > 0) {
-      return { ok: false, error: 'new_session failed: a task is active or queued' };
+      return { ok: false, kind: 'error', error: 'new_session failed: a task is active or queued' };
     }
     this.driver.kill();
     this.state = 'idle';
-    return { ok: true };
+    return { ok: true, kind: 'ok' };
   }
 
   private async runPrompt(dir: string, prompt: string, reply: (response: SupervisorResponse) => void): Promise<void> {
     if (this.boundDir === null) {
-      reply({ ok: false, error: 'run_prompt failed: no directory is bound' });
+      reply({ ok: false, kind: 'error', error: 'run_prompt failed: no directory is bound' });
       return;
     }
     const resolved = resolve(dir);
     if (resolved !== this.boundDir) {
-      reply({ ok: false, error: `run_prompt failed: ${dir} does not match the bound directory ${this.boundDir}` });
+      reply({ ok: false, kind: 'error', error: `run_prompt failed: ${dir} does not match the bound directory ${this.boundDir}` });
       return;
     }
     if (this.active !== null && this.queue.length >= QUEUE_DEPTH) {
       reply({
         ok: false,
+        kind: 'busy',
         busy: true,
         position: this.queue.length + 1,
         error: `queue full: ${this.queue.length} tasks queued ahead`,
@@ -239,6 +230,11 @@ export class Supervisor {
 
   private async supervised(task: QueuedTask, prompt: string): Promise<string> {
     let respawns = 0;
+    const respawnOrLimit = async (): Promise<void> => {
+      if (respawns >= MAX_TASK_RESPAWNS) throw new Error('freebuff driver crashed: respawn limit reached');
+      respawns += 1;
+      await this.respawnDriver();
+    };
     for (;;) {
       const work = this.driver.runTask(this.boundDir!, prompt);
       work.catch(() => {});
@@ -250,20 +246,16 @@ export class Supervisor {
           freeze.promise,
         ]);
       } catch (error) {
-        const crash = error instanceof FreebuffDriverError && error.reason === 'process-exited' && !task.cancelled;
+        const crash = error instanceof FreebuffDriverError && error.reason === 'process_exited' && !task.cancelled;
         if (!crash) throw error;
-        if (respawns >= MAX_TASK_RESPAWNS) throw new Error('freebuff driver crashed: respawn limit reached');
-        respawns += 1;
-        await this.respawnDriver();
+        await respawnOrLimit();
         continue;
       } finally {
         freeze.stop();
       }
       if (answer !== FROZEN) return answer;
       if (task.cancelled) throw new Error('task cancelled');
-      if (respawns >= MAX_TASK_RESPAWNS) throw new Error('freebuff driver crashed: respawn limit reached');
-      respawns += 1;
-      await this.respawnDriver();
+      await respawnOrLimit();
     }
   }
 
@@ -290,7 +282,7 @@ export class Supervisor {
         clearInterval(timer);
         resolve(FROZEN);
       }
-    }, Math.min(1_000, Math.max(50, Math.floor(this.freezeMs / 4))));
+    }, Math.min(FREEZE_POLL_MAX_MS, Math.max(FREEZE_POLL_MIN_MS, Math.floor(this.freezeMs / 4))));
     return { promise, stop: () => clearInterval(timer) };
   }
 
@@ -306,7 +298,7 @@ export class Supervisor {
       try {
         this.activeModel = applyModelPolicy(this.configDir);
       } catch (error) {
-        throw new Error(`model policy failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`model policy failed: ${errorMessage(error)}`);
       }
       let prompt = task.prompt;
       if (Buffer.byteLength(prompt, 'utf8') > PASTE_THRESHOLD_BYTES) {
@@ -317,14 +309,14 @@ export class Supervisor {
       const answer = await this.supervised(task, prompt);
       await this.driver.park();
       this.state = 'parked';
-      task.reply({ ok: true, answer });
+      task.reply({ ok: true, kind: 'answer', answer });
     } catch (error) {
       this.driver.kill();
       this.state = 'idle';
       task.reply(
         task.cancelled
-          ? { ok: false, error: 'task cancelled' }
-          : { ok: false, error: error instanceof Error ? error.message : String(error) },
+          ? { ok: false, kind: 'error', error: 'task cancelled' }
+          : { ok: false, kind: 'error', error: errorMessage(error) },
       );
     } finally {
       if (tempFile !== null) rmSync(tempFile, { force: true });
@@ -354,13 +346,13 @@ export class Supervisor {
     try {
       request = JSON.parse(line) as SupervisorRequest;
     } catch {
-      this.send(socket, { ok: false, error: 'malformed request: expected a JSON line' });
+      this.send(socket, { ok: false, kind: 'error', error: 'malformed request: expected a JSON line' });
       return;
     }
     try {
       await this.handle(request, (response) => this.send(socket, response));
     } catch (error) {
-      this.send(socket, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      this.send(socket, { ok: false, kind: 'error', error: errorMessage(error) });
     }
   }
 
@@ -370,25 +362,16 @@ export class Supervisor {
 }
 
 const readModelSlug = (configDir: string): string | null => {
-  try {
-    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as { freebuffModel?: unknown };
-    return typeof settings.freebuffModel === 'string' ? settings.freebuffModel : null;
-  } catch {
-    return null;
-  }
+  const settings = readSettings(configDir);
+  return typeof settings.freebuffModel === 'string' ? settings.freebuffModel : null;
 };
 
 const applyModelPolicy = (configDir: string): string => {
   const [head] = resolveModelPolicy();
-  let settings: Record<string, unknown> = {};
-  try {
-    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as Record<string, unknown>;
-  } catch {
-    settings = {};
-  }
+  const settings = readSettings(configDir);
   settings.freebuffModel = head;
   mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings, null, 2));
+  writeFileSync(join(configDir, SETTINGS_FILENAME), JSON.stringify(settings, null, 2));
   return head;
 };
 
@@ -412,25 +395,19 @@ const versionNewer = (candidate: string, current: string): boolean => {
   return false;
 };
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-
-if (isMain) {
-  const pipeName = process.env.FREEBUFF_SUPERVISOR_PIPE ?? SUPERVISOR_PIPE;
-  const driver = process.env.FREEBUFF_DRIVER_JSON
-    ? (JSON.parse(process.env.FREEBUFF_DRIVER_JSON) as DriverOptions)
-    : defaultDriverOptions();
-  const taskTimeoutMs = Number(process.env.FREEBUFF_TASK_TIMEOUT_MS) || TASK_TIMEOUT_MS;
-  const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MINUTES * 60_000;
+if (isMainModule(import.meta.url)) {
   const main = async (): Promise<void> => {
-    if (await pipeReachable(pipeName, 250)) process.exit(0);
+    const { pipeName, driver, taskTimeoutMs } = mainOptions();
+    const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MS;
+    if (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS)) process.exit(0);
     const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs });
     try {
       await supervisor.listen();
     } catch (error) {
-      if (await pipeReachable(pipeName, 5_000)) process.exit(0);
+      if (await pipeReachable(pipeName, PIPE_CONNECT_TIMEOUT_MS)) process.exit(0);
       throw error;
     }
-    await waitForPipe(pipeName, 1_000);
+    await waitForPipe(pipeName, STARTUP_PIPE_WAIT_MS);
   };
   main().catch((error) => {
     console.error(error);

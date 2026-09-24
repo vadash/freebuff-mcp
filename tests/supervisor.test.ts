@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { chmodSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { requestPipe, sendRawLine, sleep, waitForPipe } from '../src/ipc.ts';
+import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
+import { sleep } from '../src/util.ts';
 import { Supervisor, type SupervisorResponse } from '../src/supervisor.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, stubPath, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 
@@ -185,7 +186,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       );
       let bound: SupervisorResponse | undefined;
       await sup.handle({ op: 'bind', dir: dirs.otherDir }, (response) => { bound = response; });
-      expect(bound).toEqual({ ok: true });
+      expect(bound).toEqual({ ok: true, kind: 'ok' });
       expect(purged).toHaveLength(2);
       for (const response of purged) {
         if (!('error' in response)) throw new Error(`purged reply without error: ${JSON.stringify(response)}`);
@@ -193,7 +194,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       }
       let task: SupervisorResponse | undefined;
       await sup.handle({ op: 'run_prompt', dir: dirs.otherDir, prompt: 'after purge' }, (response) => { task = response; });
-      expect(task).toEqual({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): after purge' });
+      expect(task).toEqual({ ok: true, kind: 'answer', answer: 'stub(z-ai/glm-5.3-flash): after purge' });
       let status: SupervisorResponse | undefined;
       await sup.handle({ op: 'status' }, (response) => { status = response; });
       if (!status || !('state' in status)) throw new Error(`bad status reply: ${JSON.stringify(status)}`);
@@ -222,7 +223,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     try {
       let bound: SupervisorResponse | undefined;
       await sup.handle({ op: 'bind', dir: dirs.taskDir }, (response) => { bound = response; });
-      expect(bound).toEqual({ ok: true });
+      expect(bound).toEqual({ ok: true, kind: 'ok' });
       chmodSync(settingsPath, 0o444);
       let failed: SupervisorResponse | undefined;
       await sup.handle({ op: 'run_prompt', dir: dirs.taskDir, prompt: 'doomed' }, (response) => { failed = response; });
@@ -236,7 +237,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       chmodSync(settingsPath, 0o666);
       let next: SupervisorResponse | undefined;
       await sup.handle({ op: 'run_prompt', dir: dirs.taskDir, prompt: 'recovered' }, (response) => { next = response; });
-      expect(next).toEqual({ ok: true, answer: 'stub(z-ai/glm-5.3-flash): recovered' });
+      expect(next).toEqual({ ok: true, kind: 'answer', answer: 'stub(z-ai/glm-5.3-flash): recovered' });
     } finally {
       chmodSync(settingsPath, 0o666);
       // driver is compile-time private; named cast to stop the spawned stub.

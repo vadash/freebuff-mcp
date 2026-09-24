@@ -4,13 +4,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { READY_TIMEOUT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
+import { PIPE_PROBE_TIMEOUT_MS, READY_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from './config.ts';
 import type { DriverOptions } from './driver.ts';
-import { defaultDriverOptions } from './supervisor.ts';
 import type { SupervisorRequest, SupervisorResponse } from './supervisor.ts';
 import { pipeReachable, requestPipe, waitForPipe } from './ipc.ts';
+import { isMainModule, mainOptions } from './entry.ts';
 
 const supervisorEntry = resolve(dirname(fileURLToPath(import.meta.url)), 'supervisor.ts');
 
@@ -32,13 +32,13 @@ export class SupervisorClient {
     this.taskTimeoutMs = options.taskTimeoutMs;
   }
 
-  async request(request: SupervisorRequest, timeoutMs = 30_000): Promise<SupervisorResponse> {
+  async request(request: SupervisorRequest, timeoutMs = REQUEST_TIMEOUT_MS): Promise<SupervisorResponse> {
     await this.ensureStarted();
     return await requestPipe<SupervisorResponse>(this.options.pipeName, request, timeoutMs);
   }
 
   async ensureStarted(): Promise<void> {
-    if (await pipeReachable(this.options.pipeName, 250)) return;
+    if (await pipeReachable(this.options.pipeName, PIPE_PROBE_TIMEOUT_MS)) return;
     if (!this.spawnIfMissing) throw new Error(`no supervisor is listening on ${this.options.pipeName}`);
     const child = spawn(process.execPath, ['--experimental-strip-types', supervisorEntry], {
       env: {
@@ -68,7 +68,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
     'Queue a prompt against the bound directory and wait for the final answer. Returns {busy, position} when the queue is full.',
     { dir: z.string().describe('Must equal the bound directory'), prompt: z.string().describe('Task prompt') },
     async ({ dir, prompt }) =>
-      result(await client.request({ op: 'run_prompt', dir, prompt }, client.taskTimeoutMs + 30_000)),
+      result(await client.request({ op: 'run_prompt', dir, prompt }, client.taskTimeoutMs + REQUEST_TIMEOUT_MS)),
   );
   server.tool(
     'cancel_task',
@@ -104,39 +104,27 @@ interface ToolContent {
 }
 
 const result = (response: SupervisorResponse): ToolContent => {
-  if (response.ok && 'answer' in response) return { content: [{ type: 'text', text: response.answer }] };
-  if (response.ok && 'state' in response) {
-    const { state, boundDir, queueDepth, activeModel, trialMinutesLeft, freebucksDaily, needsLogin, updatePending } = response;
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ state, boundDir, queueDepth, activeModel, trialMinutesLeft, freebucksDaily, needsLogin, updatePending }),
-        },
-      ],
-    };
+  switch (response.kind) {
+    case 'answer':
+      return { content: [{ type: 'text', text: response.answer }] };
+    case 'status': {
+      const { ok: _ok, kind: _kind, ...payload } = response;
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+    }
+    case 'doctor':
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: response.failures.length === 0, failures: response.failures }) }] };
+    case 'ok':
+      return { content: [{ type: 'text', text: 'ok' }] };
+    case 'busy':
+      return { content: [{ type: 'text', text: JSON.stringify({ busy: true, position: response.position }) }] };
+    case 'error':
+      return { content: [{ type: 'text', text: response.error }], isError: true };
   }
-  if (response.ok && 'failures' in response) {
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: response.failures.length === 0, failures: response.failures }) }] };
-  }
-  if (response.ok) return { content: [{ type: 'text', text: 'ok' }] };
-  if ('busy' in response) {
-    return { content: [{ type: 'text', text: JSON.stringify({ busy: true, position: response.position }) }] };
-  }
-  return { content: [{ type: 'text', text: response.error }], isError: true };
 };
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   const main = async (): Promise<void> => {
-    const client = new SupervisorClient({
-      pipeName: process.env.FREEBUFF_SUPERVISOR_PIPE ?? SUPERVISOR_PIPE,
-      driver: process.env.FREEBUFF_DRIVER_JSON
-        ? (JSON.parse(process.env.FREEBUFF_DRIVER_JSON) as DriverOptions)
-        : defaultDriverOptions(),
-      taskTimeoutMs: Number(process.env.FREEBUFF_TASK_TIMEOUT_MS) || TASK_TIMEOUT_MS,
-    });
+    const client = new SupervisorClient(mainOptions());
     const server = createMcpServer(client);
     await server.connect(new StdioServerTransport());
     process.stdin.on('end', () => process.exit(0));

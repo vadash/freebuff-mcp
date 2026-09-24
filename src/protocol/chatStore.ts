@@ -2,8 +2,8 @@ import { basename } from 'node:path';
 import { FULL_RESPONSE_KEY, MSG_KEY, SHOULD_END_TURN_KEY, TURN_END_MSG } from './markers.ts';
 
 // Issue #1: basename-key collisions are accepted; the real app keys chats by plain basename.
-export function projectKey(cwd: string, _resolvedCwd: string): string {
-  return basename(cwd);
+export function projectKey(dir: string): string {
+  return basename(dir);
 }
 
 export type ChatDirSnapshot = { dirName: string; mtimeMs: number; logBytes: number; logText: string };

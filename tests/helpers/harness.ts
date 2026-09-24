@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
-import { requestPipe, sleep } from '../../src/ipc.ts';
+import { requestPipe } from '../../src/ipc.ts';
+import { sleep } from '../../src/util.ts';
 
 export const stubPath = fileURLToPath(new URL('../stub-freebuff.mjs', import.meta.url));
 export const supervisorEntry = fileURLToPath(new URL('../../src/supervisor.ts', import.meta.url));

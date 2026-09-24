@@ -3,7 +3,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_MODELS } from '../src/config.ts';
-import { requestPipe, sleep, waitForPipe } from '../src/ipc.ts';
+import { requestPipe, waitForPipe } from '../src/ipc.ts';
+import { sleep } from '../src/util.ts';
+import { defaultDriverOptions } from '../src/driver.ts';
 import {
   detectTurnEnd,
   hasLineSince,
@@ -14,7 +16,6 @@ import {
 } from '../src/protocol/chatStore.ts';
 import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
-import { defaultDriverOptions } from '../src/supervisor.ts';
 import { flatDump, RealCli, realChatsRoot, snapshotChats } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
 
@@ -71,8 +72,8 @@ const livePid = (configDir: string): number => {
   return Number.parseInt(readFileSync(join(configDir, 'freebuff.lock'), 'utf8').trim(), 10);
 };
 
-const chatStoreAnswer = (configDir: string, cwd: string): string => {
-  const root = join(configDir, PROJECTS_DIRNAME, projectKey(cwd, resolve(cwd)), CHATS_DIRNAME);
+const chatStoreAnswer = (configDir: string, dir: string): string => {
+  const root = join(configDir, PROJECTS_DIRNAME, projectKey(dir), CHATS_DIRNAME);
   const ordered = [...snapshotChats(root)].sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const snap of ordered) {
     const turn = detectTurnEnd([snap], { dirName: snap.dirName, logBytes: 0 });
