@@ -191,11 +191,14 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 45 });
-    const locked = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.otherDir });
+    const locked = await requestPipe<{ ok: boolean; kind?: string; boundDir?: string; unlocksInMinutes?: number }>(
+      pipeName,
+      { op: 'bind', dir: dirs.otherDir },
+    );
     expect(locked.ok).toBe(false);
-    expect(locked.error).toMatch(/bound_dir_locked/);
-    expect(locked.error).toContain(resolve(dirs.taskDir));
-    expect(locked.error).toMatch(/unlocks in 15 minutes/);
+    expect(locked.kind).toBe('bound_dir_locked');
+    expect(locked.boundDir).toBe(resolve(dirs.taskDir));
+    expect(locked.unlocksInMinutes).toBe(15);
     await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
   }, 60_000);
 
@@ -209,10 +212,14 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const stubPid = Number.parseInt(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8').trim(), 10);
     spawn('taskkill', ['/PID', String(stubPid), '/T', '/F']);
     await pollStatus(pipeName, { state: 'stopped', hourSessionMinutesLeft: 45 });
-    const locked = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.otherDir });
+    const locked = await requestPipe<{ ok: boolean; kind?: string; boundDir?: string; unlocksInMinutes?: number }>(
+      pipeName,
+      { op: 'bind', dir: dirs.otherDir },
+    );
     expect(locked.ok).toBe(false);
-    expect(locked.error).toMatch(/bound_dir_locked/);
-    expect(locked.error).toMatch(/unlocks in 15 minutes/);
+    expect(locked.kind).toBe('bound_dir_locked');
+    expect(locked.boundDir).toBe(resolve(dirs.taskDir));
+    expect(locked.unlocksInMinutes).toBe(15);
     await pollStatus(pipeName, { state: 'stopped', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
   }, 60_000);
 
@@ -346,12 +353,11 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       ).then((r) => answers.push(r.answer ?? '')),
     );
     await pollStatus(pipeName, { queueDepth: 4 });
-    const overflow = await requestPipe<{ ok: boolean; busy?: boolean; position?: number }>(
+    const overflow = await requestPipe<{ ok: boolean; position?: number }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'overflow' },
     );
     expect(overflow.ok).toBe(false);
-    expect(overflow.busy).toBe(true);
     expect(overflow.position).toBe(5);
     await Promise.all(tasks);
     expect(answers).toEqual(['stub(DeepSeek V4.1 Flash): p1', 'stub(DeepSeek V4.1 Flash): p2', 'stub(DeepSeek V4.1 Flash): p3', 'stub(DeepSeek V4.1 Flash): p4', 'stub(DeepSeek V4.1 Flash): p5']);

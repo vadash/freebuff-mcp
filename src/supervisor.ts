@@ -49,7 +49,8 @@ export type SupervisorResponse =
   | ({ ok: true; kind: 'status' } & StatusPayload)
   | { ok: true; kind: 'doctor'; skipped: boolean; failures: string[] }
   | { ok: false; kind: 'error'; error: string }
-  | { ok: false; kind: 'busy'; busy: true; position: number; error: string };
+  | { ok: false; kind: 'bound_dir_locked'; boundDir: string; unlocksInMinutes: number; error: string }
+  | { ok: false; kind: 'busy'; position: number; error: string };
 
 interface QueuedTask {
   prompt: string;
@@ -194,7 +195,9 @@ export class Supervisor {
         const unlocksInMinutes = minutesLeft - BIND_LOCK_GRACE_MINUTES;
         reply({
           ok: false,
-          kind: 'error',
+          kind: 'bound_dir_locked',
+          boundDir: this.boundDir,
+          unlocksInMinutes,
           error: `bind rejected: bound_dir_locked: ${this.boundDir} unlocks in ${unlocksInMinutes} minutes; restart the supervisor to switch now`,
         });
         return;
@@ -273,7 +276,6 @@ export class Supervisor {
       reply({
         ok: false,
         kind: 'busy',
-        busy: true,
         position: this.queue.length + 1,
         error: `queue full: ${this.queue.length} tasks queued ahead`,
       });

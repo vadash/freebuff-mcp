@@ -123,6 +123,8 @@ const result = (response: SupervisorResponse): ToolContent => {
       return { content: [{ type: 'text', text: 'ok' }] };
     case 'busy':
       return { content: [{ type: 'text', text: JSON.stringify({ busy: true, position: response.position }) }], isError: true };
+    case 'bound_dir_locked':
+      return { content: [{ type: 'text', text: JSON.stringify({ boundDir: response.boundDir, unlocksInMinutes: response.unlocksInMinutes }) }], isError: true };
     case 'error':
       return { content: [{ type: 'text', text: response.error }], isError: true };
   }

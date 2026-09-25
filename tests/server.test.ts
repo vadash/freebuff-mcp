@@ -104,8 +104,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 45 });
     const locked = (await c.callTool({ name: 'bind', arguments: { dir: dirs.otherDir } })) as CallResult;
     expect(locked.isError).toBe(true);
-    expect(locked.content[0]!.text).toMatch(/bound_dir_locked/);
-    expect(locked.content[0]!.text).toContain(resolve(dirs.taskDir));
+    expect(JSON.parse(locked.content[0]!.text ?? '')).toEqual({ boundDir: resolve(dirs.taskDir), unlocksInMinutes: 15 });
   }, 60_000);
 
   it('cancels the active task and resets the session through the new tools', async () => {
