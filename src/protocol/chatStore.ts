@@ -51,11 +51,14 @@ export function hasLineSince(snap: ChatDirSnapshot, fromBytes: number, test: (js
 }
 
 // Ack shapes seen in the wild: the stub logs the prompt as the msg field; the real app
-// nests it under data.prompt on the agent start/end lines.
+// nests it under data.prompt on the agent start/end lines. Since the 2026-09 update the
+// real app labels bigger bracketed pastes, storing `[Pasted Text]\n` + prompt, so a
+// mention is an exact match or a labeled paste carrying the prompt as its tail.
 export function lineMentionsPrompt(json: Record<string, unknown>, prompt: string): boolean {
   if (json[MSG_KEY] === prompt) return true;
   const data = typeof json.data === 'object' && json.data !== null ? (json.data as Record<string, unknown>) : null;
-  return data?.prompt === prompt;
+  const stored = data?.prompt;
+  return typeof stored === 'string' && (stored === prompt || stored.endsWith(prompt));
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>

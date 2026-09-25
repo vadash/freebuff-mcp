@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { detectTurnEnd, newestChatDir, projectKey } from '../src/protocol/chatStore.ts';
+import { detectTurnEnd, lineMentionsPrompt, newestChatDir, projectKey } from '../src/protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from '../src/protocol/chatStore.ts';
 
 const dir = new URL('./fixtures/chat/', import.meta.url);
@@ -20,6 +20,35 @@ describe('projectKey', () => {
 
   it('accepts basename collisions across parents (issue #1)', () => {
     expect(projectKey('C:/work/demo-app')).toBe(projectKey('D:/elsewhere/demo-app'));
+  });
+});
+
+describe('lineMentionsPrompt', () => {
+  const prompt = 'Reply with exactly one word and nothing else: ping';
+
+  it('matches the prompt as the msg field', () => {
+    expect(lineMentionsPrompt({ msg: prompt }, prompt)).toBe(true);
+  });
+
+  it('matches an exact data.prompt (stub and small real pastes)', () => {
+    expect(lineMentionsPrompt({ data: { prompt } }, prompt)).toBe(true);
+  });
+
+  it('matches a `[Pasted Text]`-labeled paste carrying the prompt as tail (2026-09 CLI)', () => {
+    expect(lineMentionsPrompt({ data: { prompt: `[Pasted Text]\n${prompt}` } }, prompt)).toBe(true);
+  });
+
+  it('rejects an unrelated stored prompt', () => {
+    expect(lineMentionsPrompt({ data: { prompt: 'unrelated' } }, prompt)).toBe(false);
+  });
+
+  it('rejects a near-miss that does not end with the prompt', () => {
+    expect(lineMentionsPrompt({ data: { prompt: `x${prompt.slice(1)}` } }, prompt)).toBe(false);
+    expect(lineMentionsPrompt({ data: { prompt: prompt.slice(0, -1) } }, prompt)).toBe(false);
+  });
+
+  it('rejects when the prompt is present but not as tail', () => {
+    expect(lineMentionsPrompt({ data: { prompt: `${prompt}\ntrailing chatter` } }, prompt)).toBe(false);
   });
 });
 
