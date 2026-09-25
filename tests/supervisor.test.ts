@@ -56,6 +56,28 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(bad.ok).toBe(false);
   }, 30_000);
 
+  it('doctor skips the live check with no Instance and reports ok at the picker and at ready', async () => {
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
+    expect(await requestPipe(pipeName, { op: 'doctor' })).toEqual({ ok: true, kind: 'doctor', skipped: true, failures: [] });
+    await requestPipe(pipeName, { op: 'bind', dir: dirs.taskDir });
+    await pollStatus(pipeName, { state: 'picker' });
+    expect(await requestPipe(pipeName, { op: 'doctor' })).toEqual({ ok: true, kind: 'doctor', skipped: false, failures: [] });
+    await requestPipe(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'task' }, 30_000);
+    await pollStatus(pipeName, { state: 'ready' });
+    expect(await requestPipe(pipeName, { op: 'doctor' })).toEqual({ ok: true, kind: 'doctor', skipped: false, failures: [] });
+  }, 60_000);
+
+  it('doctor names the drifted Marker when the live Screen renders altered wording', async () => {
+    boot('drift', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1' } });
+    await waitForPipe(pipeName, 10_000);
+    await requestPipe(pipeName, { op: 'bind', dir: dirs.taskDir });
+    await pollStatus(pipeName, { state: 'ready' });
+    const report = await requestPipe<{ failures: string[] }>(pipeName, { op: 'doctor' });
+    expect(report).toMatchObject({ ok: true, kind: 'doctor', skipped: false });
+    expect(report.failures).toEqual([expect.stringMatching(/^COUNTDOWN_REGEX: /)]);
+  }, 60_000);
+
   it('spawns at bind, lands at the picker, and idles at ready after each task without respawning', async () => {
     boot('happy');
     await waitForPipe(pipeName, 10_000);

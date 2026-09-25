@@ -1,93 +1,55 @@
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
-  CHATS_DIRNAME,
-  CONNECTING,
-  FULL_RESPONSE_KEY,
-  LOG_FILENAME,
-  LOGIN_REQUIRED,
-  MSG_KEY,
+  CONTINUE_PROMPT,
+  COUNTDOWN_REGEX,
+  FREEBUCKS_BALANCE_REGEX,
+  FREEBUCKS_LEFT_REGEX,
   PICKER_TITLE,
-  PROJECTS_DIRNAME,
+  PRICE_REGEX,
   READY_PROMPT,
-  SHOULD_END_TURN_KEY,
-  SINGLE_INSTANCE,
-  TURN_END_MSG,
+  SESSION_ENDED,
 } from './protocol/markers.ts';
-import { flattenScreen } from './protocol/screen.ts';
 
-export interface DoctorOptions {
-  markers?: Record<string, string>;
-  fixtureDir?: string;
-}
+type Marker = [name: string, pattern: string | RegExp];
 
-export interface DoctorReport {
-  ok: boolean;
-  failures: string[];
-}
+type IdleScreen = 'Model picker' | 'ready' | 'Continue';
 
-const allMarkers = () => ({
-  READY_PROMPT,
-  CONNECTING,
-  PICKER_TITLE,
-  TURN_END_MSG,
-  LOGIN_REQUIRED,
-  SINGLE_INSTANCE,
-  FULL_RESPONSE_KEY,
-  SHOULD_END_TURN_KEY,
-  MSG_KEY,
-  PROJECTS_DIRNAME,
-  CHATS_DIRNAME,
-  LOG_FILENAME,
-});
-
-const FIXTURE_FOR_MARKER: Record<string, string> = {
-  READY_PROMPT: 'screen/ready.ansi',
-  CONNECTING: 'screen/connecting.ansi',
-  PICKER_TITLE: 'screen/picker-expanded.ansi',
-  LOGIN_REQUIRED: 'screen/login-required.ansi',
-  SINGLE_INSTANCE: 'screen/single-instance.ansi',
-  TURN_END_MSG: 'chat/full-turn.jsonl',
-  FULL_RESPONSE_KEY: 'chat/full-turn.jsonl',
-  SHOULD_END_TURN_KEY: 'chat/full-turn.jsonl',
-  MSG_KEY: 'chat/full-turn.jsonl',
+// The Markers each idle screen renders. A screen is recognised when any of its Markers
+// is on the Screen; every Marker of a recognised screen must then be present. Recognition
+// deliberately avoids classifyScreen: that relies on the very Markers being checked.
+const SCREEN_MARKERS: Record<IdleScreen, Marker[]> = {
+  'Model picker': [
+    ['PICKER_TITLE', PICKER_TITLE],
+    ['PRICE_REGEX', PRICE_REGEX],
+    ['FREEBUCKS_BALANCE_REGEX', FREEBUCKS_BALANCE_REGEX],
+  ],
+  ready: [
+    ['READY_PROMPT', READY_PROMPT],
+    ['COUNTDOWN_REGEX', COUNTDOWN_REGEX],
+  ],
+  Continue: [
+    ['SESSION_ENDED', SESSION_ENDED],
+    ['CONTINUE_PROMPT', CONTINUE_PROMPT],
+    ['FREEBUCKS_LEFT_REGEX', FREEBUCKS_LEFT_REGEX],
+  ],
 };
 
-const defaultFixtureDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'fixtures');
+const present = (text: string, pattern: string | RegExp): boolean =>
+  typeof pattern === 'string' ? text.includes(pattern) : pattern.test(text);
 
-export const runDoctor = async (options: DoctorOptions = {}): Promise<DoctorReport> => {
-  const fixtureDir = options.fixtureDir ?? defaultFixtureDir;
-  const values = { ...allMarkers(), ...options.markers };
-  let signatures: Record<string, string>;
-  try {
-    signatures = JSON.parse(readFileSync(join(fixtureDir, 'protocol-signatures.json'), 'utf8')) as Record<string, string>;
-  } catch {
-    return { ok: false, failures: ['protocol-signatures.json: missing or unreadable committed signatures'] };
-  }
+/** Failures naming each Marker missing or drifted from the live Screen text. */
+export const checkMarkers = (text: string): string[] => {
   const failures: string[] = [];
-  for (const [name, value] of Object.entries(values)) {
-    const expected = signatures[name];
-    if (expected === undefined) {
-      failures.push(`${name}: no committed protocol signature`);
-      continue;
+  let recognised = false;
+  for (const [screen, markers] of Object.entries(SCREEN_MARKERS)) {
+    if (!markers.some(([, pattern]) => present(text, pattern))) continue;
+    recognised = true;
+    for (const [name, pattern] of markers) {
+      if (!present(text, pattern)) failures.push(`${name}: missing from the ${screen} Screen (expected ${String(pattern)})`);
     }
-    if (expected !== createHash('sha256').update(value).digest('hex')) {
-      failures.push(`${name}: marker value does not match the committed protocol signature`);
-      continue;
-    }
-    const fixture = FIXTURE_FOR_MARKER[name];
-    if (fixture === undefined) continue;
-    let raw: string;
-    try {
-      raw = readFileSync(join(fixtureDir, fixture), 'utf8');
-    } catch {
-      failures.push(`${name}: pinned fixture ${fixture} is missing or unreadable`);
-      continue;
-    }
-    const content = fixture.endsWith('.ansi') ? await flattenScreen([raw]) : raw;
-    if (!content.includes(value)) failures.push(`${name}: pinned fixture ${fixture} does not contain the marker`);
   }
-  return { ok: failures.length === 0, failures };
+  if (!recognised) {
+    const names = Object.values(SCREEN_MARKERS).flat().map(([name]) => name).join(', ');
+    failures.push(`Screen matches no known screen: none of ${names} found`);
+  }
+  return failures;
 };

@@ -45,12 +45,14 @@ const fixture = (name) => readFileSync(new URL(`./fixtures/screen/${name}`, impo
 // driver needs \r\n, exactly like the real TUI's output.
 const crlf = (text) => text.replace(/\n/g, '\r\n');
 
-// Real Countdown wording: `7h 12m left`, `1h left`, `59m left`.
+// Real Countdown wording: `7h 12m left`, `1h left`, `59m left`. Mode `drift` renders
+// altered wording (`remaining`) so `doctor` has a drifted Marker to name.
+const LEFT = mode === 'drift' ? 'remaining' : 'left';
 const countdownText = (min) => {
   const total = Math.max(0, Math.floor(min));
-  if (total < 60) return `${total}m left`;
+  if (total < 60) return `${total}m ${LEFT}`;
   const hours = Math.floor(total / 60);
-  return total % 60 === 0 ? `${hours}h left` : `${hours}h ${total % 60}m left`;
+  return total % 60 === 0 ? `${hours}h ${LEFT}` : `${hours}h ${total % 60}m ${LEFT}`;
 };
 
 // The captured picker with the balance numbers substituted and, when

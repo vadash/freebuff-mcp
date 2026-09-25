@@ -96,7 +96,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   );
   server.tool(
     'doctor',
-    'Verify terminal markers against pinned fixtures and committed protocol signatures.',
+    'Check the terminal markers expected for the current state against the live freebuff screen.',
     {},
     async () => result(await client.request({ op: 'doctor' })),
   );
@@ -118,7 +118,7 @@ const result = (response: SupervisorResponse): ToolContent => {
       return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
     }
     case 'doctor':
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: response.failures.length === 0, failures: response.failures }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: !response.skipped && response.failures.length === 0, skipped: response.skipped, failures: response.failures }) }] };
     case 'ok':
       return { content: [{ type: 'text', text: 'ok' }] };
     case 'busy':

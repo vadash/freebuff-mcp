@@ -5,7 +5,7 @@ import { FAILURE_SCREEN_LINES, FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_TH
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
-import { runDoctor } from './doctor.ts';
+import { checkMarkers } from './doctor.ts';
 import { classifyScreen, freezeSignature, screenExcerpt } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
@@ -46,7 +46,7 @@ export type SupervisorResponse =
   | { ok: true; kind: 'ok' }
   | { ok: true; kind: 'answer'; answer: string }
   | ({ ok: true; kind: 'status' } & StatusPayload)
-  | { ok: true; kind: 'doctor'; failures: string[] }
+  | { ok: true; kind: 'doctor'; skipped: boolean; failures: string[] }
   | { ok: false; kind: 'error'; error: string }
   | { ok: false; kind: 'busy'; busy: true; position: number; error: string };
 
@@ -143,9 +143,17 @@ export class Supervisor {
         });
         break;
       }
-      case 'doctor':
-        reply({ ok: true, kind: 'doctor', failures: (await runDoctor()).failures });
+      case 'doctor': {
+        // The live check needs an idle Instance's Screen; otherwise it is skipped, not passed.
+        // An Instance whose Markers drifted may read as 'stopped', so check any live idle one.
+        const observed = this.observedState();
+        reply(
+          this.driver.isAlive() && observed !== 'busy' && observed !== 'spawning'
+            ? { ok: true, kind: 'doctor', skipped: false, failures: checkMarkers(this.driver.screenText()) }
+            : { ok: true, kind: 'doctor', skipped: true, failures: [] },
+        );
         break;
+      }
       case 'shutdown':
         this.driver.kill();
         reply({ ok: true, kind: 'ok' });

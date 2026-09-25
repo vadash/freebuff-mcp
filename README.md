@@ -49,7 +49,7 @@ freebuff instance survives it.
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
 | `new_session` | none | Starts a fresh conversation. Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
-| `doctor` | none | Checks the protocol markers against committed fixtures; returns `{ ok, failures }`. |
+| `doctor` | none | Checks the markers expected on the current screen (picker, ready, Continue, Countdown, Freebucks) against the live screen; returns `{ ok, skipped, failures }`. `skipped` (with `ok: false`) when no idle instance is running. |
 
 `status` fields:
 
@@ -107,8 +107,6 @@ Tracked against ADR-0001; fixes are being planned.
 
 - **Multi-line prompts may submit early.** Prompts are typed as raw text, not
   as a bracketed paste.
-- **`doctor` does not look at the live screen.** It only compares the code's
-  constants with committed fixtures, so it cannot detect a freebuff update.
 
 ## Real smoke test
 

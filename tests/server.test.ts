@@ -181,9 +181,10 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     await c.connect(transport!);
     const report = JSON.parse(toolText((await c.callTool({ name: 'doctor', arguments: {} })) as CallResult)) as {
       ok: boolean;
+      skipped: boolean;
       failures: string[];
     };
-    expect(report).toEqual({ ok: true, failures: [] });
+    expect(report).toEqual({ ok: false, skipped: true, failures: [] });
   }, 30_000);
 
   it('starts the supervisor with a console, so programs it starts open no console window', async () => {

@@ -1,5 +1,6 @@
 // Ready prompt vendored from Praket7/freebuff-mcp (MIT); the rest probed from the live TUI.
-// Wording-bearing markers are backed by a real captured fixture (tests/fixtures/screen/README.md).
+// Wording-bearing markers were captured from the real TUI (tests/fixtures/screen/README.md);
+// `doctor` checks the ones the Model picker, ready and Continue screens render against the live Screen.
 export const READY_PROMPT = 'Enter a coding task or / for commands';
 export const CONNECTING = 'Connecting';
 export const PICKER_TITLE = 'Start coding for free';
