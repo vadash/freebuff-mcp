@@ -6,7 +6,7 @@ import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { checkMarkers } from './doctor.ts';
-import { classifyScreen, errorLines, freezeSignature, screenExcerpt } from './protocol/screen.ts';
+import { classifyScreen, errorLines, freezeSignature, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -77,12 +77,11 @@ class WatchdogFailure extends Error {
 const BIND_LOCK_GRACE_MINUTES = 30;
 
 export class Supervisor {
-  private state: SupervisorState = 'stopped';
+  private spawning = false;
   private boundDir: string | null = null;
   private readonly queue: QueuedTask[] = [];
   private active: QueuedTask | null = null;
-  // new_session is typing /new into the Instance.
-  private resetting = false;
+  private startingConversation = false;
   private readonly driver: FreebuffDriver;
   private readonly taskTimeoutMs: number;
   private readonly freezeMs: number;
@@ -129,11 +128,12 @@ export class Supervisor {
       case 'status': {
         const probe = this.driver.probe();
         // Observed on the ready Screen status line; a dead Instance observes nothing.
-        const activeModel = this.driver.isAlive() ? classifyScreen(this.driver.screenText()).activeModel : null;
+        const verdict = this.driver.isAlive() ? this.verdict() : null;
+        const activeModel = verdict?.activeModel ?? null;
         reply({
           ok: true,
           kind: 'status',
-          state: this.observedState(),
+          state: this.observedState(verdict ?? undefined),
           boundDir: this.boundDir,
           queueDepth: this.queue.length,
           activeModel,
@@ -208,13 +208,14 @@ export class Supervisor {
     }
     this.driver.kill();
     this.boundDir = resolved;
-    this.state = 'spawning';
+    this.spawning = true;
     try {
-      this.state = await this.driver.awaitIdle(resolved);
+      await this.driver.awaitIdle(resolved);
+      this.spawning = false;
       reply({ ok: true, kind: 'ok' });
     } catch (error) {
       this.driver.kill();
-      this.state = 'stopped';
+      this.spawning = false;
       reply({ ok: false, kind: 'error', error: `bind failed: ${errorMessage(error)}` });
     }
   }
@@ -233,30 +234,33 @@ export class Supervisor {
   // Issue #18: /new goes to the ready Instance, which keeps running. At the picker or
   // with no Instance there is no Conversation to leave: every Task starts with /new.
   private async newConversation(): Promise<SupervisorResponse> {
-    if (this.active !== null || this.queue.length > 0 || this.resetting) {
+    if (this.active !== null || this.queue.length > 0 || this.startingConversation) {
       return { ok: false, kind: 'error', error: 'new_session failed: a task is active or queued' };
     }
     if (this.observedState() !== 'ready') return { ok: true, kind: 'ok' };
     // Tasks arriving meanwhile queue behind /new instead of typing over it.
-    this.resetting = true;
+    this.startingConversation = true;
     try {
       await this.driver.newConversation();
     } finally {
-      this.resetting = false;
+      this.startingConversation = false;
       this.pump();
     }
     return { ok: true, kind: 'ok' };
   }
 
-  private observedState(): SupervisorState {
-    if (this.active !== null && !this.active.answered) return 'busy';
-    if (this.state === 'spawning') return 'spawning';
-    return this.screenState();
+  private verdict(): ScreenVerdict {
+    return classifyScreen(this.driver.screenText());
   }
 
-  private screenState(): SupervisorState {
+  private observedState(verdict = this.verdict()): SupervisorState {
+    if (this.active !== null && !this.active.answered) return 'busy';
+    if (this.spawning) return 'spawning';
+    return this.screenState(verdict);
+  }
+
+  private screenState(verdict = this.verdict()): SupervisorState {
     if (!this.driver.isAlive()) return 'stopped';
-    const verdict = classifyScreen(this.driver.screenText());
     if (verdict.ready) return 'ready';
     if (verdict.picker !== null || verdict.continueScreen) return 'picker';
     return 'stopped';
@@ -294,10 +298,10 @@ export class Supervisor {
   }
 
   private pump(): void {
-    if (this.active !== null || this.resetting || this.queue.length === 0) return;
+    if (this.active !== null || this.startingConversation || this.queue.length === 0) return;
     const task = this.queue.shift()!;
     this.active = task;
-    this.state = this.driver.isAlive() ? 'busy' : 'spawning';
+    this.spawning = !this.driver.isAlive();
     void this.runOne(task);
   }
 
@@ -324,7 +328,7 @@ export class Supervisor {
       throw error;
     } finally {
       clearTimeout(deadline);
-      clearInterval(freeze);
+      freeze.stop();
       errors.stop();
     }
   }
@@ -372,7 +376,7 @@ export class Supervisor {
 
   // Frozen: neither the Screen (minus the Countdown and Freebucks lines) nor the Chat
   // store changed for the freeze threshold.
-  private watchFreeze(task: QueuedTask, onFrozen: () => void): NodeJS.Timeout {
+  private watchFreeze(task: QueuedTask, onFrozen: () => void): { stop: () => void } {
     const dir = this.boundDir!;
     let lastLog = this.driver.newestLogSize(dir);
     let lastScreen = freezeSignature(this.driver.screenText());
@@ -395,19 +399,20 @@ export class Supervisor {
         onFrozen();
       }
     }, Math.min(FREEZE_POLL_MAX_MS, Math.max(FREEZE_POLL_MIN_MS, Math.floor(this.freezeMs / 4))));
-    return timer;
+    return { stop: () => clearInterval(timer) };
   }
 
   // A fresh Instance in the Bound directory, idle at the picker or ready (an unexpired Hour
   // session resumes). A failed respawn leaves the supervisor stopped; the next Task spawns.
   private async respawn(): Promise<void> {
-    this.state = 'spawning';
+    this.spawning = true;
     await this.driver.stop();
     try {
-      this.state = await this.driver.awaitIdle(this.boundDir!);
+      await this.driver.awaitIdle(this.boundDir!);
+      this.spawning = false;
     } catch {
       this.driver.kill();
-      this.state = 'stopped';
+      this.spawning = false;
     }
   }
 
@@ -421,7 +426,7 @@ export class Supervisor {
         prompt = `Read the instructions in ${basename(tempFile)} in the current directory and follow them.`;
       }
       const answer = await this.supervised(task, prompt);
-      this.state = this.screenState();
+      this.spawning = false;
       task.reply({ ok: true, kind: 'answer', answer });
     } catch (error) {
       if (!task.cancelled && error instanceof WatchdogFailure) {
@@ -431,11 +436,11 @@ export class Supervisor {
         await this.respawn();
       } else if (!task.cancelled && error instanceof FreebuffDriverError && error.reason === 'no_answer') {
         // The Turn ended; the Instance is idle and stays up for the next Task.
-        this.state = this.screenState();
+        this.spawning = false;
         task.reply({ ok: false, kind: 'error', error: error.message });
       } else {
         this.driver.kill();
-        this.state = 'stopped';
+        this.spawning = false;
         task.reply(
           task.cancelled
             ? { ok: false, kind: 'error', error: 'task cancelled' }

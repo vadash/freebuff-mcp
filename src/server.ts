@@ -65,8 +65,8 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   const server = new McpServer({ name: 'freebuff-supervisor', version: '0.1.0' });
   server.tool(
     'bind',
-    'Bind freebuff to an existing project directory. Switching directories is refused with bound_dir_locked while more than 30 minutes of the Hour session remain; restarting the supervisor unlocks it now. Rebinding the same directory is a no-op. Rejected while a task is active; rebinding purges queued tasks.',
-    { dir: z.string().describe('Project directory to bind') },
+    'Bind freebuff to an existing directory. Switching directories is refused with bound_dir_locked while more than 30 minutes of the Hour session remain; restarting the supervisor unlocks it now. Rebinding the same directory is a no-op. Rejected while a task is active; rebinding purges queued tasks.',
+    { dir: z.string().describe('Directory to bind') },
     async ({ dir }) => result(await client.request({ op: 'bind', dir })),
   );
   server.tool(

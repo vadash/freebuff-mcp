@@ -187,12 +187,10 @@ export class FreebuffDriver {
   async awaitIdle(dir: string): Promise<'picker' | 'ready'> {
     const instance = await this.acquire(dir);
     return await this.waitSettled(
-      instance.pty,
-      instance.screen,
+      instance,
       () => {
         if (instance.exited) throw new FreebuffDriverError('process_exited');
       },
-      dir,
       true,
     );
   }
@@ -214,7 +212,7 @@ export class FreebuffDriver {
       if (instance.exited) throw new FreebuffDriverError('process_exited');
     };
     try {
-      await this.waitSettled(pty, instance.screen, assertAlive, dir, false);
+      await this.waitSettled(instance, assertAlive, false);
       const baseline = turnBaseline(this.snapshot(chatsRoot));
       if (this.options.keepAlive) await this.startConversation(pty);
       await this.pastePrompt(pty, prompt);
@@ -308,7 +306,8 @@ export class FreebuffDriver {
     });
   }
 
-  private async waitSettled(pty: IPty, screen: CliTerminalScreen, assertAlive: () => void, dir: string, idle: boolean): Promise<'picker' | 'ready'> {
+  private async waitSettled(instance: LiveInstance, assertAlive: () => void, idle: boolean): Promise<'picker' | 'ready'> {
+    const { pty, screen, dir } = instance;
     const deadline = Date.now() + this.readyMs;
     let lastPickerEnterAt = 0;
     let continuePressed = false;
