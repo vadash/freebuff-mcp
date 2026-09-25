@@ -31,6 +31,9 @@ export const LOG_FILENAME = 'log.jsonl';
 export const INSTANCE_RECORD_FILENAME = 'freebuff-instance-owner.json';
 export const LOCK_FILENAME = 'freebuff.lock';
 export const METADATA_FILENAME = 'freebuff-metadata.json';
+// Issue #21: unknown settle-loop screens dumped under the config directory,
+// one folder per CLI version, one file per freeze signature. Write-only.
+export const SCREEN_DUMPS_DIRNAME = 'screen-dumps';
 
 // Slash commands typed into the TUI input box.
 export const NEW_COMMAND = '/new';

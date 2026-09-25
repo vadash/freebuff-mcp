@@ -13,7 +13,9 @@
 // lines that Turn prints to the Screen mid-Turn before it ends normally.
 // FREEBUFF_STUB_INPUT_LOG (issue #18) names a JSON-lines file recording each spawn,
 // each bracketed paste and each submitted input line, so tests see exactly what the
-// driver sent. Mode `no-answer` ends the first Turn without a fullResponse.
+// driver sent. Mode `no-answer` ends the first Turn without a fullResponse. Mode
+// `unknown` (issue #21) boots into a screen matching no known class and repaints it
+// with a ticking Countdown, for the driver's screen-dump tests.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -105,6 +107,13 @@ const pickerScreen = () => {
 };
 
 const continueScreen = () => CLEAR + crlf(fixture('continue.ansi'));
+
+// Issue #21: a frame matching no known class (no picker, ready, Continue, session-in-use,
+// login or connecting marker), with a ticking Countdown line so the driver's freeze-signature
+// dedupe is exercised: repaints collapse to one dump file that still keeps the Countdown.
+const UNKNOWN_TITLE = 'Quantum flux calibration panel';
+const unknownScreen = () =>
+  CLEAR + crlf([bannerLine, cwd, '─'.repeat(60), `  ${UNKNOWN_TITLE}`, `  Sync window: ${countdownText(countdownMin)}`, '  Await further instructions.', '─'.repeat(60), ''].join('\n'));
 
 // Ready input box with the Hour-session status line, in the captured wording.
 const readyScreen = () => {
@@ -304,6 +313,16 @@ process.stdin.on('data', (chunk) => {
 await sleep(80);
 out(CONNECTING + ' to agent...\r\n');
 await sleep(80);
+if (mode === 'unknown') {
+  // No intermediate banner frame: the first stable screen is already the unknown one,
+  // so a boot produces exactly one dump signature. Repaints tick the Countdown.
+  out(unknownScreen());
+  for (;;) {
+    await sleep(200);
+    countdownMin = Math.max(1, countdownMin - 1);
+    out(unknownScreen());
+  }
+}
 out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
 await sleep(80);
 if (mode === 'needs-login') {

@@ -1,7 +1,8 @@
 // PTY driver adapted from Praket7/freebuff-mcp (MIT).
 /// <reference lib="es2024" />
 import { execFile } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,8 +11,8 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
+import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, SCREEN_DUMPS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
+import { CliTerminalScreen, classifyScreen, freezeSignature, isKnownScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
 export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login' | 'no_answer';
@@ -129,20 +130,44 @@ export class FreebuffDriver {
   } {
     const text = this.screenText();
     const verdict = classifyScreen(text);
-    let onDiskVersion: string | null = null;
-    try {
-      const meta = JSON.parse(readFileSync(join(this.options.configDir, METADATA_FILENAME), 'utf8')) as { version?: unknown };
-      if (typeof meta.version === 'string') onDiskVersion = meta.version;
-    } catch {
-      onDiskVersion = null;
-    }
     return {
       hourSessionMinutesLeft: verdict.countdownMinutes,
       freebucksBalance: verdict.freebucksBalance,
       freebucksDaily: verdict.freebucksDaily,
       runningVersion: VERSION_BANNER_REGEX.exec(text)?.[1] ?? null,
-      onDiskVersion,
+      onDiskVersion: this.metadataVersion(),
     };
+  }
+
+  // The installed CLI version from the metadata file, shared by the updatePending
+  // probe and the screen-dump folder name; null when unreadable.
+  private metadataVersion(): string | null {
+    try {
+      const meta = JSON.parse(readFileSync(join(this.options.configDir, METADATA_FILENAME), 'utf8')) as { version?: unknown };
+      return typeof meta.version === 'string' ? meta.version : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Issue #21: an unknown Screen frame is dumped once per freeze signature under the
+  // config directory, in a folder per installed CLI version. Countdown repaints dedupe
+  // to one file because the signature strips the Countdown lines; the file keeps them.
+  // Write-only diagnostics: nothing reads dumps back, and a failed dump never fails
+  // the settle loop.
+  private dumpUnknownScreen(text: string): void {
+    try {
+      const version = this.metadataVersion() ?? 'unknown';
+      const hash = createHash('sha256').update(freezeSignature(text)).digest('hex');
+      const dir = join(this.options.configDir, SCREEN_DUMPS_DIRNAME, version);
+      const path = join(dir, `${hash}.ansi`);
+      if (!existsSync(path)) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(path, text);
+      }
+    } catch {
+      // Diagnostics only.
+    }
   }
 
   newestLogSize(dir: string): number {
@@ -336,6 +361,7 @@ export class FreebuffDriver {
         continue;
       }
       const verdict = classifyScreen(text, dir);
+      if (!isKnownScreen(verdict, text)) this.dumpUnknownScreen(text);
       if (verdict.ready) {
         if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
         this.loginRequired = false;

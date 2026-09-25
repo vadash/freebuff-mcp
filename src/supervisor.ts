@@ -27,6 +27,7 @@ export type SupervisorRequest =
   | { op: 'cancel_task' }
   | { op: 'new_session' }
   | { op: 'status' }
+  | { op: 'screen' }
   | { op: 'doctor' }
   | { op: 'shutdown' };
 
@@ -48,6 +49,7 @@ export type SupervisorResponse =
   | { ok: true; kind: 'ok' }
   | { ok: true; kind: 'answer'; answer: string }
   | ({ ok: true; kind: 'status' } & StatusPayload)
+  | { ok: true; kind: 'screen'; screen: string }
   | { ok: true; kind: 'doctor'; skipped: boolean; failures: string[] }
   | { ok: false; kind: 'error'; error: string }
   | { ok: false; kind: 'bound_dir_locked'; boundDir: string; unlocksInMinutes: number; error: string }
@@ -125,6 +127,11 @@ export class Supervisor {
         break;
       case 'new_session':
         reply(await this.newConversation());
+        break;
+      case 'screen':
+        // Issue #21: the Instance's Screen exactly as the Driver and Watchdog read
+        // it, in every supervisor state; '' while stopped with nothing painted yet.
+        reply({ ok: true, kind: 'screen', screen: this.driver.screenText() });
         break;
       case 'status': {
         const probe = this.driver.probe();

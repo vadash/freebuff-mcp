@@ -49,6 +49,7 @@ freebuff instance survives it.
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
 | `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op at the Model picker or with no instance). Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
+| `screen` | none | The running Instance's current Screen, flattened to text — the exact text the supervisor's Driver and Watchdog read. Works in every supervisor state; empty until the Instance first paints. |
 | `doctor` | none | Checks the markers expected on the current screen (picker, ready, Continue, Countdown, Freebucks) against the live screen; returns `{ ok, skipped, failures }`. `skipped` (with `ok: false`) when no idle instance is running. |
 
 `status` fields:
@@ -96,6 +97,17 @@ While a task runs, screen lines matching freebuff's known error strings (e.g.
 `time`, `boundDir` and the matched `lines`. A line is logged once per task. The
 log is for later analysis only: nothing acts on it, and the task carries on.
 Set `FREEBUFF_ERROR_LOG` in the supervisor's environment to write it elsewhere.
+
+### Screen dumps
+
+While starting a task or binding, a screen that matches no known state (Model
+picker, ready, Continue screen, session-in-use dialog, login gate, connecting)
+is saved under `<configDir>\screen-dumps\<version>\<hash>.ansi`. `<version>` is
+the installed CLI version from freebuff's metadata file, `unknown` if that file
+cannot be read; `<hash>` is the SHA-256 of the screen with its Countdown and
+Freebucks lines stripped, so a ticking countdown repaints to the same file (the
+file itself keeps those lines). Dumps are for later analysis only: nothing
+reads them back.
 
 ## How freebuff's usage works
 

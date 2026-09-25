@@ -30,6 +30,8 @@ export interface HarnessOptions extends HarnessDirs {
   delayMs?: number;
   taskTimeoutMs?: number;
   freezeMs?: number;
+  /** Driver ready timeout (bind/settle deadline), e.g. so a never-settling stub fails fast. */
+  readyMs?: number;
   /** Extra stub environment (e.g. FREEBUFF_STUB_COUNTDOWN_MIN) merged into the driver JSON. */
   stubEnv?: Record<string, string>;
 }
@@ -56,6 +58,7 @@ export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
           executable: process.execPath,
           argsPrefix: [stubPath],
           configDir: options.configDir,
+          ...(options.readyMs === undefined ? {} : { timeouts: { readyMs: options.readyMs } }),
           env: {
             FREEBUFF_STUB_MODE: options.mode,
             ...(options.delayMs === undefined ? {} : { FREEBUFF_STUB_DELAY_MS: String(options.delayMs) }),
@@ -125,3 +128,7 @@ export const answerOf = (result: { content: Array<{ type: string; text?: string 
   expect(result.isError).toBeFalsy();
   return result.content[0]!.text ?? '';
 };
+
+// ConPTY repaints pad rows to the full terminal width; captured fixtures keep trailing
+// padding trimmed. Screens and fixtures only compare equal row-by-row right-trimmed.
+export const trimRows = (text: string): string => text.replace(/[ \t]+$/gm, '').replace(/\n+$/, '');

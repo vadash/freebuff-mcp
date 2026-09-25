@@ -95,6 +95,12 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
     async () => result(await client.request({ op: 'status' })),
   );
   server.tool(
+    'screen',
+    "Return the running freebuff Instance's current Screen, flattened to text — the exact text the supervisor's Driver and Watchdog read. Works in every supervisor state.",
+    {},
+    async () => result(await client.request({ op: 'screen' })),
+  );
+  server.tool(
     'doctor',
     'Check the terminal markers expected for the current state against the live freebuff screen.',
     {},
@@ -119,6 +125,8 @@ const result = (response: SupervisorResponse): ToolContent => {
     }
     case 'doctor':
       return { content: [{ type: 'text', text: JSON.stringify({ ok: !response.skipped && response.failures.length === 0, skipped: response.skipped, failures: response.failures }) }] };
+    case 'screen':
+      return { content: [{ type: 'text', text: response.screen }] };
     case 'ok':
       return { content: [{ type: 'text', text: 'ok' }] };
     case 'busy':

@@ -3,9 +3,10 @@ import { spawn } from 'node:child_process';
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
+import { READY_PROMPT } from '../src/protocol/markers.ts';
 import { sleep } from '../src/util.ts';
 import { Supervisor, type SupervisorResponse } from '../src/supervisor.ts';
-import { errorLogPath, expectExit, makeDirs, pollStatus, startSupervisor, stubPath, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { errorLogPath, expectExit, makeDirs, pollStatus, startSupervisor, stubPath, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 
 let pipeName = '';
 let proc: SupervisorProcess | null = null;
@@ -86,6 +87,60 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const report = await requestPipe<{ failures: string[] }>(pipeName, { op: 'doctor' });
     expect(report).toMatchObject({ ok: true, kind: 'doctor', skipped: false });
     expect(report.failures).toEqual([expect.stringMatching(/^COUNTDOWN_REGEX: /)]);
+  }, 30_000);
+
+  // Issue #21: the screen op returns the exact flattened Screen the Driver and Watchdog read.
+  it('screen op returns the flattened Screen while stopped, at the picker, busy and ready', async () => {
+    boot('happy');
+    await waitForPipe(pipeName, 10_000);
+    expect(await requestPipe(pipeName, { op: 'screen' })).toEqual({ ok: true, kind: 'screen', screen: '' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker' });
+    const atPicker = await requestPipe<{ screen: string }>(pipeName, { op: 'screen' });
+    expect(atPicker).toMatchObject({ ok: true, kind: 'screen' });
+    // Pipe seam: the stub replays the captured picker fixture verbatim under its
+    // banner + directory header, and the op hands back exactly that flattened text.
+    const fixture = readFileSync(new URL('./fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8')
+      .replace('\x1b[2J\x1b[H\n', '');
+    expect(trimRows(atPicker.screen).endsWith(trimRows(fixture))).toBe(true);
+    const task = requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'screen states' }, 30_000);
+    await pollStatus(pipeName, { state: 'busy' });
+    // Busy is set before the settle loop picks the model; poll until the ready box paints.
+    const busyDeadline = Date.now() + 10_000;
+    let busyScreen = '';
+    while (Date.now() < busyDeadline) {
+      busyScreen = (await requestPipe<{ screen: string }>(pipeName, { op: 'screen' })).screen;
+      if (busyScreen.includes(READY_PROMPT)) break;
+      await sleep(150);
+    }
+    expect(busyScreen).toContain(READY_PROMPT);
+    expect((await task).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready' });
+    expect((await requestPipe<{ screen: string }>(pipeName, { op: 'screen' })).screen).toContain(READY_PROMPT);
+  }, 30_000);
+
+  it('dumps the unknown settle screen once, under the metadata version folder', async () => {
+    writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.190' }));
+    boot('unknown', { readyMs: 2_500 });
+    await waitForPipe(pipeName, 10_000);
+    const binding = requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000);
+    await pollStatus(pipeName, { state: 'spawning' });
+    // The screen op works while the settle loop is living through the unknown screen;
+    // before the stub's first paint it legitimately returns ''.
+    const spawnDeadline = Date.now() + 10_000;
+    let spawnScreen = '';
+    while (Date.now() < spawnDeadline) {
+      spawnScreen = (await requestPipe<{ screen: string }>(pipeName, { op: 'screen' })).screen;
+      if (spawnScreen.includes('Quantum flux calibration panel')) break;
+      await sleep(150);
+    }
+    expect(spawnScreen).toContain('Quantum flux calibration panel');
+    expect((await binding).ok).toBe(false);
+    await pollStatus(pipeName, { state: 'stopped' });
+    const versionDir = join(dirs.configDir, 'screen-dumps', '0.0.190');
+    const dumps = readdirSync(versionDir);
+    expect(dumps).toHaveLength(1);
+    expect(readFileSync(join(versionDir, dumps[0]!), 'utf8')).toContain('Quantum flux calibration panel');
   }, 30_000);
 
   it('spawns at bind, lands at the picker, and idles at ready after each task without respawning', async () => {

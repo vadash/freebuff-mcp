@@ -1,10 +1,10 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { FreebuffDriver } from '../src/driver.ts';
-import { CONTINUE_PROMPT } from '../src/protocol/markers.ts';
+import { CONTINUE_PROMPT, COUNTDOWN_REGEX } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
 import { sleep } from '../src/util.ts';
 
@@ -27,6 +27,7 @@ const harness = (
       env: { FREEBUFF_STUB_MODE: mode, ...opts.stubEnv },
     }),
     dir,
+    configDir,
   };
 };
 
@@ -114,5 +115,38 @@ describe('FreebuffDriver', () => {
     expect(verdict.freebucksBalance).toBe(3);
     expect(verdict.freebucksDaily).toBe(25);
     await driver.stop();
+  }, 30_000);
+
+  // Issue #21: the settle loop dumps a screen matching no known class once per freeze
+  // signature, in a folder named by the metadata file's version.
+  it('dumps the unknown settle screen once per signature under the metadata version folder', async () => {
+    const { driver, dir, configDir } = harness('unknown', { readyMs: 2_000 });
+    writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.199' }));
+    await expect(driver.runTask(dir, 'hello')).rejects.toMatchObject({ reason: 'ready_timeout' });
+    const versionDir = join(configDir, 'screen-dumps', '0.0.199');
+    const dumps = readdirSync(versionDir);
+    expect(dumps).toHaveLength(1);
+    expect(dumps[0]).toMatch(/^[0-9a-f]{64}\.ansi$/);
+    const content = readFileSync(join(versionDir, dumps[0]!), 'utf8');
+    expect(content).toContain('Quantum flux calibration panel');
+    // The file keeps the Countdown lines the signature strips for comparison.
+    expect(content).toMatch(COUNTDOWN_REGEX);
+    // Second boot on the same screen: same signature, no new file.
+    const again = new FreebuffDriver({
+      executable: process.execPath,
+      argsPrefix: [stub],
+      configDir,
+      timeouts: { readyMs: 2_000 },
+      env: { FREEBUFF_STUB_MODE: 'unknown' },
+    });
+    await expect(again.runTask(dir, 'hello again')).rejects.toMatchObject({ reason: 'ready_timeout' });
+    expect(readdirSync(versionDir)).toHaveLength(1);
+    await again.stop();
+  }, 30_000);
+
+  it('dumps under "unknown" when the metadata file is unreadable', async () => {
+    const { driver, dir, configDir } = harness('unknown', { readyMs: 2_000 });
+    await expect(driver.runTask(dir, 'hello')).rejects.toMatchObject({ reason: 'ready_timeout' });
+    expect(readdirSync(join(configDir, 'screen-dumps', 'unknown'))).toHaveLength(1);
   }, 30_000);
 });

@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
-import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 import type { ChildProcess } from 'node:child_process';
 
 let pipeName = '';
@@ -200,6 +200,18 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       failures: string[];
     };
     expect(report).toEqual({ ok: false, skipped: true, failures: [] });
+  }, 30_000);
+
+  // Issue #21: the screen tool hands back the Instance's flattened Screen.
+  it('returns the running Screen through the screen tool', async () => {
+    const c = boot('happy');
+    await c.connect(transport!);
+    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
+    await pollStatus(pipeName, { state: 'picker' });
+    const screen = toolText((await c.callTool({ name: 'screen', arguments: {} })) as CallResult);
+    const fixture = readFileSync(new URL('./fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '');
+    expect(trimRows(screen).endsWith(trimRows(fixture))).toBe(true);
+    expect(screen).toContain('Start coding for free');
   }, 30_000);
 
   it('starts the supervisor with a console, so programs it starts open no console window', async () => {
