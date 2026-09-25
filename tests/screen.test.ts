@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { KNOWN_ERROR_STRINGS, SINGLE_INSTANCE } from '../src/protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, countdownMinutes, flattenScreen, freezeSignature, screenExcerpt } from '../src/protocol/screen.ts';
+import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeSignature, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
 const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');
@@ -84,6 +84,13 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
   it('matches the captured error screen against the known error strings', async () => {
     const text = await screen('error.ansi');
     expect(KNOWN_ERROR_STRINGS.some((marker) => text.includes(marker))).toBe(true);
+  });
+
+  it('extracts the error lines from the captured error screen, trimmed, one per occurrence', async () => {
+    const text = await screen('error.ansi');
+    const line = 'Command not found: "/definitely-not-a-freebuff-command"';
+    expect(errorLines(`${text}\n${text}`)).toEqual([line, line]);
+    expect(errorLines(await screen('ready.ansi'))).toEqual([]);
   });
 
   it('matches the single-instance dialog marker against the real capture', async () => {

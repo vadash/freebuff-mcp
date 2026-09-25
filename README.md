@@ -88,6 +88,15 @@ is never resent: a half-run coding task is not safe to repeat.
 A full queue returns `{ "busy": true, "position": N }`, currently not flagged
 as an error.
 
+### Error log
+
+While a task runs, screen lines matching freebuff's known error strings (e.g.
+`Command not found: …`) are appended to
+`%LOCALAPPDATA%\freebuff-supervisor\errors.jsonl`, one JSON line per entry with
+`time`, `boundDir` and the matched `lines`. A line is logged once per task. The
+log is for later analysis only: nothing acts on it, and the task carries on.
+Set `FREEBUFF_ERROR_LOG` in the supervisor's environment to write it elsewhere.
+
 ## How freebuff's usage works
 
 - An **Hour session** starts when a model is picked at freebuff's model picker.

@@ -2,7 +2,7 @@
 // exceeds hand-rolled VT support, and raw PTY history is not the visible screen.
 import headless from '@xterm/headless';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
-import { CONNECTING, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR } from './markers.ts';
+import { CONNECTING, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR } from './markers.ts';
 
 const { Terminal } = headless;
 
@@ -119,6 +119,13 @@ export const freezeSignature = (text: string): string =>
     .split('\n')
     .filter((line) => !COUNTDOWN_REGEX.test(line) && !FREEBUCKS_BALANCE_REGEX.test(line) && !FREEBUCKS_LEFT_REGEX.test(line))
     .join('\n');
+
+/** Screen lines carrying a known error Marker, trimmed, one per occurrence, for the error log. */
+export const errorLines = (text: string): string[] =>
+  text
+    .split('\n')
+    .filter((line) => KNOWN_ERROR_STRINGS.some((marker) => line.includes(marker)))
+    .map((line) => line.trim());
 
 /** The last `count` non-blank Screen lines, right-trimmed, for failure messages. */
 export const screenExcerpt = (text: string, count: number): string =>

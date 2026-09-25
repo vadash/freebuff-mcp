@@ -1,3 +1,6 @@
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 export const QUEUE_DEPTH = 4;
 export const TASK_TIMEOUT_MS = 20 * 60_000;
 export const READY_TIMEOUT_MS = 120_000;
@@ -10,10 +13,13 @@ export const FREEZE_THRESHOLD_MINUTES = 3;
 export const FREEZE_THRESHOLD_MS = FREEZE_THRESHOLD_MINUTES * 60_000;
 export const FREEZE_POLL_MAX_MS = 1_000;
 export const FREEZE_POLL_MIN_MS = 50;
+export const ERROR_LOG_POLL_MS = 250;
 export const FAILURE_SCREEN_LINES = 20;
 export const SCREEN_ROWS = 48;
 export const SCREEN_COLS = 160;
 export const SUPERVISOR_PIPE = '\\\\.\\pipe\\freebuff-supervisor';
+// Issue #17: error-looking Screen lines seen during a Turn, one JSON line per entry.
+export const ERROR_LOG_PATH = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'freebuff-supervisor', 'errors.jsonl');
 
 // Driver polling and typing cadence.
 export const POLL_MS = 250;

@@ -1,12 +1,12 @@
-import { statSync, writeFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
-import { basename, join, resolve } from 'node:path';
-import { FAILURE_SCREEN_LINES, FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
+import { basename, dirname, join, resolve } from 'node:path';
+import { ERROR_LOG_PATH, ERROR_LOG_POLL_MS, FAILURE_SCREEN_LINES, FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { checkMarkers } from './doctor.ts';
-import { classifyScreen, freezeSignature, screenExcerpt } from './protocol/screen.ts';
+import { classifyScreen, errorLines, freezeSignature, screenExcerpt } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -18,6 +18,7 @@ export interface SupervisorConfig {
   driver?: DriverOptions;
   taskTimeoutMs?: number;
   freezeThresholdMs?: number;
+  errorLogPath?: string;
 }
 
 export type SupervisorRequest =
@@ -82,6 +83,7 @@ export class Supervisor {
   private readonly driver: FreebuffDriver;
   private readonly taskTimeoutMs: number;
   private readonly freezeMs: number;
+  private readonly errorLogPath: string;
   private readonly pipeName: string;
   private tempCounter = 0;
 
@@ -89,6 +91,7 @@ export class Supervisor {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
     this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MS;
+    this.errorLogPath = config.errorLogPath ?? ERROR_LOG_PATH;
     this.driver = new FreebuffDriver({
       ...(config.driver ?? defaultDriverOptions()),
       keepAlive: true,
@@ -298,6 +301,7 @@ export class Supervisor {
     const freeze = this.watchFreeze(task, () =>
       trip(this.watchdogFailure('frozen', `no Screen or Chat store change for ${formatDuration(this.freezeMs)}`)),
     );
+    const errors = this.watchErrors();
     try {
       return await Promise.race([work, tripped]);
     } catch (error) {
@@ -308,7 +312,45 @@ export class Supervisor {
     } finally {
       clearTimeout(deadline);
       clearInterval(freeze);
+      errors.stop();
     }
+  }
+
+  // Issue #17: Screen lines carrying a known error Marker during a Turn are appended to
+  // the error log for later analysis; nothing acts on them. A line counts once it shows
+  // more often than when the Turn started (earlier Turns' copies stay on the Screen), and
+  // is logged once per Turn.
+  private watchErrors(): { stop: () => void } {
+    const boundDir = this.boundDir!;
+    const tally = (): Map<string, number> => {
+      const counts = new Map<string, number>();
+      for (const line of errorLines(this.driver.screenText())) counts.set(line, (counts.get(line) ?? 0) + 1);
+      return counts;
+    };
+    // A dead Instance's last Screen is not what the respawned one will show.
+    const baseline = this.driver.isAlive() ? tally() : new Map<string, number>();
+    const logged = new Set<string>();
+    const scan = (): void => {
+      const lines = [...tally()]
+        .filter(([line, count]) => count > (baseline.get(line) ?? 0) && !logged.has(line))
+        .map(([line]) => line);
+      if (lines.length === 0) return;
+      for (const line of lines) logged.add(line);
+      try {
+        mkdirSync(dirname(this.errorLogPath), { recursive: true });
+        appendFileSync(this.errorLogPath, JSON.stringify({ time: new Date().toISOString(), boundDir, lines }) + '\n');
+      } catch {
+        // The log is best-effort; it never fails a Task.
+      }
+    };
+    const timer = setInterval(scan, ERROR_LOG_POLL_MS);
+    // A final scan catches lines printed just before the Turn ended.
+    return {
+      stop: () => {
+        clearInterval(timer);
+        scan();
+      },
+    };
   }
 
   private watchdogFailure(reason: WatchdogReason, detail: string): WatchdogFailure {
@@ -446,8 +488,9 @@ if (isMainModule(import.meta.url)) {
   const main = async (): Promise<void> => {
     const { pipeName, driver, taskTimeoutMs } = mainOptions();
     const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MS;
+    const errorLogPath = process.env.FREEBUFF_ERROR_LOG || ERROR_LOG_PATH;
     if (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS)) process.exit(0);
-    const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs });
+    const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs, errorLogPath });
     try {
       await supervisor.listen();
     } catch (error) {

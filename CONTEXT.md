@@ -92,6 +92,9 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
   lines, and Chat store unchanged for 3 minutes), crash, or its 20-minute
   deadline, then respawns the Instance. Never resubmits the prompt.
 - **Doctor**: the `doctor` tool; checks the Markers against the live Screen.
+- **Error log**: Screen lines matching the known error Markers seen during a
+  Turn, appended with a timestamp and the Bound directory, once per Turn. Never
+  acted on.
 
 _Avoid:_ "park", "parked", "parking". The Instance idles; it is never parked,
 and `/end-session` is never sent.

@@ -5,7 +5,7 @@ import { basename, join, resolve } from 'node:path';
 import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
 import { sleep } from '../src/util.ts';
 import { Supervisor, type SupervisorResponse } from '../src/supervisor.ts';
-import { expectExit, makeDirs, pollStatus, startSupervisor, stubPath, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { errorLogPath, expectExit, makeDirs, pollStatus, startSupervisor, stubPath, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 
 let pipeName = '';
 let proc: SupervisorProcess | null = null;
@@ -287,6 +287,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
         keepAlive: true,
       },
       taskTimeoutMs: 30_000,
+      errorLogPath: errorLogPath(dirs),
     });
     try {
       // pump() promotes a queued task synchronously, so a queued-but-idle state is
@@ -492,6 +493,45 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(elapsedMs).toBeGreaterThanOrEqual(3_900);
     expect(elapsedMs).toBeLessThan(15_000);
   }, 90_000);
+
+  // Issue #17: error-looking Screen lines seen during a Turn are logged, never acted on.
+  const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
+  const ERROR_LINE = 'Command not found: "/definitely-not-a-freebuff-command"';
+  const errorLogEntries = (): Array<{ time: string; boundDir: string; lines: string[] }> => {
+    const path = errorLogPath(dirs);
+    if (!existsSync(path)) return [];
+    return readFileSync(path, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line));
+  };
+  const runTurns = async (turnLines: string[][], prompts: string[]): Promise<void> => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_TURN_LINES: JSON.stringify(turnLines) } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    for (const prompt of prompts) {
+      await expect(requestPipe(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt }, 30_000)).resolves.toMatchObject({
+        ok: true,
+        kind: 'answer',
+        answer: `stub(DeepSeek V4.1 Flash): ${prompt}`,
+      });
+    }
+  };
+
+  it('logs a known error string seen during a Turn once, and still completes the Task', async () => {
+    // The second Turn prints nothing new; the first Turn's error line is still on the Screen.
+    await runTurns([[red(ERROR_LINE), 'working', red(ERROR_LINE)], []], ['broken', 'clean']);
+    const entries = errorLogEntries();
+    expect(entries).toEqual([{ time: expect.any(String), boundDir: resolve(dirs.taskDir), lines: [ERROR_LINE] }]);
+    expect(Number.isNaN(Date.parse(entries[0]!.time))).toBe(false);
+  }, 60_000);
+
+  it('logs an error string again when a later Turn prints it while the old copy is still on the Screen', async () => {
+    await runTurns([[red(ERROR_LINE)], [red(ERROR_LINE)]], ['first', 'again']);
+    expect(errorLogEntries().map((entry) => entry.lines)).toEqual([[ERROR_LINE], [ERROR_LINE]]);
+  }, 60_000);
+
+  it('writes no error log entry for a Turn that prints only red diff lines', async () => {
+    await runTurns([[red('- throw new Error("boom");'), red('-   return failed;'), '+ return ok;']], ['diff']);
+    expect(errorLogEntries()).toEqual([]);
+  }, 60_000);
 
   it('kills the live foreign lock holder at bind and completes the task', async () => {
     const lockPath = join(dirs.configDir, 'freebuff.lock');

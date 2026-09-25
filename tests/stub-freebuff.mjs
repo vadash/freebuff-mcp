@@ -9,6 +9,8 @@
 // an unexpired Hour session instead of the picker. The displayed model is
 // keyboard-driven (issue #13): picker cursor keystrokes pick the entry whose
 // name the ready status line and the `stub(<model>):` answer echo report.
+// FREEBUFF_STUB_TURN_LINES (issue #17) is a JSON array, one entry per Turn, of the
+// lines that Turn prints to the Screen mid-Turn before it ends normally.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -37,6 +39,8 @@ let countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
 const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
 const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? '20/25').split('/').map(Number);
 const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
+const turnLines = process.env.FREEBUFF_STUB_TURN_LINES ? JSON.parse(process.env.FREEBUFF_STUB_TURN_LINES) : [];
+let turnCounter = 0;
 
 const bannerLine = `freebuff v${version}`;
 
@@ -168,6 +172,7 @@ const submit = async (prompt) => {
   const crashThisTurn = mode === 'kill-mid-turn' && !chatsExist();
   const freezeThisTurn = mode === 'freeze' && !chatsExist();
   const chatterThisTurn = mode === 'chatty' && !chatsExist();
+  const linesThisTurn = turnLines[turnCounter++] ?? [];
   const dir = join(chatsRoot(), dirName);
   mkdirSync(dir, { recursive: true });
   lastLogPath = join(dir, 'log.jsonl');
@@ -195,6 +200,7 @@ const submit = async (prompt) => {
       out(`working ${tick}\r\n`);
     }
   }
+  for (const line of linesThisTurn) out(`${line}\r\n`);
   await sleep(30 + Math.random() * 50);
   appendFileSync(
     lastLogPath,
