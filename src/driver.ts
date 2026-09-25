@@ -10,11 +10,11 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PROJECTS_DIRNAME, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
+import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
-export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login';
+export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login' | 'no_answer';
 
 export class FreebuffDriverError extends Error {
   readonly reason: DriverFailureReason;
@@ -177,6 +177,13 @@ export class FreebuffDriver {
     this.kill();
   }
 
+  // Issue #18: a new Conversation in the live Instance; nothing to do without one.
+  async newConversation(): Promise<void> {
+    const instance = this.live;
+    if (instance === null || instance.exited) return;
+    await this.startConversation(instance.pty);
+  }
+
   async awaitIdle(dir: string): Promise<'picker' | 'ready'> {
     const instance = await this.acquire(dir);
     return await this.waitSettled(
@@ -209,20 +216,18 @@ export class FreebuffDriver {
     try {
       await this.waitSettled(pty, instance.screen, assertAlive, dir, false);
       const baseline = turnBaseline(this.snapshot(chatsRoot));
-      if (this.options.keepAlive) {
-        // /new has no log-line echo, so wait for the TUI to swallow it before typing the task.
-        await this.typePrompt(pty, NEW_COMMAND);
-        await sleep(NEW_SETTLE_MS);
-      }
-      await this.typePrompt(pty, prompt);
+      if (this.options.keepAlive) await this.startConversation(pty);
+      await this.pastePrompt(pty, prompt);
       if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) {
-        await this.typePrompt(pty, prompt);
+        await this.pastePrompt(pty, prompt);
         if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack_missing');
       }
       return await this.awaitTurnEnd(chatsRoot, baseline, assertAlive);
     } catch (error) {
       // A Watchdog respawn may already have replaced this Instance; never kill its successor.
-      if (this.options.keepAlive && this.live === instance) this.kill();
+      // A Turn that ended without an Answer leaves the Instance idle and healthy.
+      const turnEnded = error instanceof FreebuffDriverError && error.reason === 'no_answer';
+      if (this.options.keepAlive && this.live === instance && !turnEnded) this.kill();
       throw error;
     } finally {
       if (!this.options.keepAlive) pty.kill();
@@ -363,8 +368,22 @@ export class FreebuffDriver {
     pty.write('\r');
   }
 
-  private async typePrompt(pty: IPty, prompt: string): Promise<void> {
-    pty.write(prompt);
+  // /new has no log-line echo, so wait for the TUI to swallow it before typing on.
+  private async startConversation(pty: IPty): Promise<void> {
+    await this.typeCommand(pty, NEW_COMMAND);
+    await sleep(NEW_SETTLE_MS);
+  }
+
+  // Slash commands are typed as keys so the TUI parses them as commands.
+  private async typeCommand(pty: IPty, command: string): Promise<void> {
+    pty.write(command);
+    await sleep(TYPE_DELAY_MS);
+    pty.write('\r');
+  }
+
+  // Issue #18: one bracketed paste, then one Enter; a newline inside never submits early.
+  private async pastePrompt(pty: IPty, prompt: string): Promise<void> {
+    pty.write(PASTE_START + prompt + PASTE_END);
     await sleep(TYPE_DELAY_MS);
     pty.write('\r');
   }
@@ -417,7 +436,11 @@ export class FreebuffDriver {
     for (;;) {
       assertAlive();
       const { done, answer } = detectTurnEnd(this.snapshot(chatsRoot), baseline);
-      if (done) return answer ?? '';
+      if (done) {
+        // ADR-0001 #8: no backup Turn-end signal; a Turn without an Answer fails the Task.
+        if (answer === null) throw new FreebuffDriverError('no_answer', 'the Turn ended without a fullResponse');
+        return answer;
+      }
       await sleep(POLL_MS);
     }
   }

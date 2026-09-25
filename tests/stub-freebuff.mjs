@@ -11,6 +11,9 @@
 // name the ready status line and the `stub(<model>):` answer echo report.
 // FREEBUFF_STUB_TURN_LINES (issue #17) is a JSON array, one entry per Turn, of the
 // lines that Turn prints to the Screen mid-Turn before it ends normally.
+// FREEBUFF_STUB_INPUT_LOG (issue #18) names a JSON-lines file recording each spawn,
+// each bracketed paste and each submitted input line, so tests see exactly what the
+// driver sent. Mode `no-answer` ends the first Turn without a fullResponse.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -23,6 +26,9 @@ const SHOULD_END_TURN_KEY = 'shouldEndTurn';
 const FULL_RESPONSE_KEY = 'fullResponse';
 const LOGIN_REQUIRED = 'Not authenticated';
 const BALANCE_LINE = /FREE · \d+\/\d+ Freebucks daily/;
+
+const PASTE_START = '200~';
+const PASTE_END = '201~';
 
 const sleep = (ms) => new Promise((wake) => setTimeout(wake, ms));
 const out = (s) => process.stdout.write(s);
@@ -41,6 +47,10 @@ const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? '20/
 const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
 const turnLines = process.env.FREEBUFF_STUB_TURN_LINES ? JSON.parse(process.env.FREEBUFF_STUB_TURN_LINES) : [];
 let turnCounter = 0;
+const inputLog = process.env.FREEBUFF_STUB_INPUT_LOG ?? null;
+const logInput = (entry) => {
+  if (inputLog !== null) appendFileSync(inputLog, JSON.stringify(entry) + '\n');
+};
 
 const bannerLine = `freebuff v${version}`;
 
@@ -124,6 +134,7 @@ writeFileSync(join(configDir, 'freebuff.lock'), String(process.pid));
 
 // Opt-in: tests learn the pid of the process that spawned the Instance (the supervisor).
 if (process.env.FREEBUFF_STUB_PARENT_PID_FILE) writeFileSync(process.env.FREEBUFF_STUB_PARENT_PID_FILE, String(process.ppid));
+logInput({ event: 'spawn', pid: process.pid });
 
 // The displayed model is keyboard-driven: the picker cursor names it (issue #13), never
 // settings.json. Without FREEBUFF_STUB_PICKER the replayed fixture keeps the real TUI's
@@ -139,6 +150,9 @@ let pending = '';
 let selection = 0;
 let model = 'none';
 let escapeState = 0;
+let csi = '';
+let pasting = false;
+let pasted = '';
 let chatCounter = 0;
 let newChatRequested = false;
 let lastLogPath = null;
@@ -172,6 +186,7 @@ const submit = async (prompt) => {
   const crashThisTurn = mode === 'kill-mid-turn' && !chatsExist();
   const freezeThisTurn = mode === 'freeze' && !chatsExist();
   const chatterThisTurn = mode === 'chatty' && !chatsExist();
+  const noAnswerThisTurn = mode === 'no-answer' && !chatsExist();
   const linesThisTurn = turnLines[turnCounter++] ?? [];
   const dir = join(chatsRoot(), dirName);
   mkdirSync(dir, { recursive: true });
@@ -204,7 +219,7 @@ const submit = async (prompt) => {
   await sleep(30 + Math.random() * 50);
   appendFileSync(
     lastLogPath,
-    JSON.stringify({ type: 'end', role: 'agent', [SHOULD_END_TURN_KEY]: true, data: { [FULL_RESPONSE_KEY]: answer } }) + '\n',
+    JSON.stringify({ type: 'end', role: 'agent', [SHOULD_END_TURN_KEY]: true, data: noAnswerThisTurn ? {} : { [FULL_RESPONSE_KEY]: answer } }) + '\n',
   );
   await sleep(30 + Math.random() * 50);
   appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: TURN_END_MSG }) + '\n');
@@ -224,23 +239,48 @@ process.stdin.setRawMode(true);
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('data', (chunk) => {
   for (const char of chunk) {
-    // Escape sequences: only the down/up arrows matter, and only at the picker.
+    // Escape sequences (CSI): the down/up arrows at the picker, and the bracketed-paste
+    // markers, between which every char is literal text (Enter included).
     if (escapeState === 1) {
       escapeState = char === '[' ? 2 : 0;
+      csi = '';
       continue;
     }
     if (escapeState === 2) {
-      if (pickerOverride !== null && phase === 'picker') {
+      const code = char.charCodeAt(0);
+      if (code < 0x40 || code > 0x7e) {
+        csi += char;
+        continue;
+      }
+      escapeState = 0;
+      const sequence = csi + char;
+      if (sequence === PASTE_START) {
+        pasting = true;
+        pasted = '';
+      } else if (sequence === PASTE_END) {
+        pasting = false;
+        logInput({ event: 'paste', text: pasted });
+      } else if (pickerOverride !== null && phase === 'picker' && csi === '') {
         const last = pickerOverride.length - 1;
         if (char === 'A' && selection > 0) selection -= 1;
         if (char === 'B' && selection < last) selection += 1;
         out(pickerScreen());
       }
-      escapeState = 0;
       continue;
     }
-    // Raw mode delivers Enter as CR; a stray LF must not count as a second Enter.
-    if (char === '\r') {
+    if (char === '\x1b') {
+      // Esc on the Continue screen reopens the Model picker.
+      if (phase === 'continue' && !pasting) {
+        phase = 'picker';
+        out(pickerScreen());
+      } else {
+        escapeState = 1;
+      }
+    } else if (pasting) {
+      pending += char;
+      pasted += char;
+    } else if (char === '\r') {
+      // Raw mode delivers Enter as CR; a stray LF must not count as a second Enter.
       if (phase === 'picker') {
         model = pickerOverride !== null ? (pickerOverride[selection]?.name ?? 'none') : fixtureCursorName();
         phase = 'ready';
@@ -252,15 +292,8 @@ process.stdin.on('data', (chunk) => {
       } else {
         const prompt = pending;
         pending = '';
+        logInput({ event: 'submit', text: prompt });
         void submit(prompt);
-      }
-    } else if (char === '\x1b') {
-      // Esc on the Continue screen reopens the Model picker.
-      if (phase === 'continue') {
-        phase = 'picker';
-        out(pickerScreen());
-      } else {
-        escapeState = 1;
       }
     } else if (char !== '\n') {
       pending += char;

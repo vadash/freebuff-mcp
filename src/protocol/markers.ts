@@ -33,6 +33,10 @@ export const NEW_COMMAND = '/new';
 
 // Keystrokes: down-arrow moves the picker cursor one row.
 export const DOWN_ARROW = '\x1b[B';
+// Bracketed paste (issue #18): text between these markers is inserted literally, so a
+// newline in a prompt never submits it early; one Enter after PASTE_END submits it.
+export const PASTE_START = '\x1b[200~';
+export const PASTE_END = '\x1b[201~';
 
 // Screen regexes over the flattened Screen text.
 // Countdown on the ready status line: `7h 12m left`, `1h left`, `59m left`, `2:58 left` (ready.ansi).

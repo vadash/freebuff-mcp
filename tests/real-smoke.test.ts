@@ -30,6 +30,13 @@ const COUNTDOWN_LINE = /\d+(?:m|h) left|\d+:\d\d left/;
 // ADR-0001 #6: the pick rule lands on the affordable DeepSeek row on a funded day.
 const expectedModel = 'DeepSeek V4.1 Flash';
 const trivialPrompt = 'Reply with exactly one word and nothing else: ping';
+// Issue #18: a ~40 KB multi-line prompt, under the Big payload threshold, so it goes in
+// as one bracketed paste; the Chat store must hold it byte for byte.
+const bigPrompt = [
+  'The numbered lines below are filler. Do not read files or run tools.',
+  ...Array.from({ length: 560 }, (_, i) => `${String(i + 1).padStart(4, '0')} filler line for the bracketed-paste smoke, ignore it entirely.`),
+  'Reply with exactly one word and nothing else: pong',
+].join('\n');
 const runTimeoutMs = 480_000;
 
 const pidAlive = (pid: number): boolean => {
@@ -82,6 +89,11 @@ const chatStoreAnswer = (configDir: string, dir: string): string => {
   throw new Error(`no chat log under ${root} holds a fullResponse yet`);
 };
 
+const chatStoreHoldsPrompt = (configDir: string, dir: string, prompt: string): boolean =>
+  snapshotChats(join(configDir, PROJECTS_DIRNAME, projectKey(dir), CHATS_DIRNAME)).some((snap) =>
+    hasLineSince(snap, 0, (json) => lineMentionsPrompt(json, prompt)),
+  );
+
 describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to run)', () => {
   let proc: SupervisorProcess | null = null;
   const pipeName = uniquePipe('real');
@@ -95,7 +107,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     }
   });
 
-  it('binds the repo, runs one trivial task matching the chat store, idles at ready, and respawns after a driver kill', async () => {
+  it('binds the repo, runs one trivial task matching the chat store, pastes a ~40 KB prompt intact, idles at ready, and respawns after a driver kill', async () => {
     proc = startSupervisor({ pipeName, mode: 'happy', realDriver: true, ...makeDirs() });
     await waitForPipe(pipeName, 60_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: repoRoot })).ok).toBe(true);
@@ -110,6 +122,14 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
 
     const ready = await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     expect(ready.activeModel, `live service picked a model other than ${expectedModel}`).toBe(expectedModel);
+
+    const big = await requestPipe<{ ok: boolean; answer?: string; error?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: repoRoot, prompt: bigPrompt },
+      runTimeoutMs,
+    );
+    expect(big.ok, big.error).toBe(true);
+    expect(chatStoreHoldsPrompt(configDir, repoRoot, bigPrompt), 'the Chat store does not hold the ~40 KB prompt intact').toBe(true);
 
     const firstPid = livePid(configDir);
     process.kill(firstPid, 'SIGKILL');

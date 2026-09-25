@@ -176,6 +176,22 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
   }, 60_000);
 
+  // Issue #18: a full Queue is a failed call that still carries the position.
+  it('returns busy with the queue position as an MCP error once the queue is full', async () => {
+    const c = boot('slow', { delayMs: 1500 });
+    await c.connect(transport!);
+    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
+    const tasks = ['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) =>
+      c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt } }, undefined, { timeout: 120_000 }),
+    );
+    await pollStatus(pipeName, { queueDepth: 4 });
+    const overflow = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'overflow' } })) as CallResult;
+    expect(overflow.isError).toBe(true);
+    expect(JSON.parse(overflow.content[0]!.text ?? '')).toEqual({ busy: true, position: 5 });
+    const answers = (await Promise.all(tasks)).map((r) => toolText(r as CallResult));
+    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(DeepSeek V4.1 Flash): ${prompt}`));
+  }, 120_000);
+
   it('runs the doctor protocol check through the supervisor op', async () => {
     const c = boot('happy');
     await c.connect(transport!);

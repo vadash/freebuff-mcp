@@ -80,6 +80,8 @@ export class Supervisor {
   private boundDir: string | null = null;
   private readonly queue: QueuedTask[] = [];
   private active: QueuedTask | null = null;
+  // new_session is typing /new into the Instance.
+  private resetting = false;
   private readonly driver: FreebuffDriver;
   private readonly taskTimeoutMs: number;
   private readonly freezeMs: number;
@@ -121,7 +123,7 @@ export class Supervisor {
         await this.cancelTask(reply);
         break;
       case 'new_session':
-        reply(this.newConversation());
+        reply(await this.newConversation());
         break;
       case 'status': {
         const probe = this.driver.probe();
@@ -225,12 +227,21 @@ export class Supervisor {
     reply({ ok: true, kind: 'ok' });
   }
 
-  private newConversation(): SupervisorResponse {
-    if (this.active !== null || this.queue.length > 0) {
+  // Issue #18: /new goes to the ready Instance, which keeps running. At the picker or
+  // with no Instance there is no Conversation to leave: every Task starts with /new.
+  private async newConversation(): Promise<SupervisorResponse> {
+    if (this.active !== null || this.queue.length > 0 || this.resetting) {
       return { ok: false, kind: 'error', error: 'new_session failed: a task is active or queued' };
     }
-    this.driver.kill();
-    this.state = 'stopped';
+    if (this.observedState() !== 'ready') return { ok: true, kind: 'ok' };
+    // Tasks arriving meanwhile queue behind /new instead of typing over it.
+    this.resetting = true;
+    try {
+      await this.driver.newConversation();
+    } finally {
+      this.resetting = false;
+      this.pump();
+    }
     return { ok: true, kind: 'ok' };
   }
 
@@ -281,7 +292,7 @@ export class Supervisor {
   }
 
   private pump(): void {
-    if (this.active !== null || this.queue.length === 0) return;
+    if (this.active !== null || this.resetting || this.queue.length === 0) return;
     const task = this.queue.shift()!;
     this.active = task;
     this.state = this.driver.isAlive() ? 'busy' : 'spawning';
@@ -416,6 +427,10 @@ export class Supervisor {
         task.answered = true;
         task.reply({ ok: false, kind: 'error', error: error.message });
         await this.respawn();
+      } else if (!task.cancelled && error instanceof FreebuffDriverError && error.reason === 'no_answer') {
+        // The Turn ended; the Instance is idle and stays up for the next Task.
+        this.state = this.screenState();
+        task.reply({ ok: false, kind: 'error', error: error.message });
       } else {
         this.driver.kill();
         this.state = 'stopped';

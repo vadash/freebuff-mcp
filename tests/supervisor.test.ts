@@ -15,6 +15,16 @@ const boot = (mode: string, extra: Partial<HarnessOptions> = {}): void => {
   proc = startSupervisor({ pipeName, mode, ...dirs, ...extra });
 };
 
+// Issue #18: what the stub received, from FREEBUFF_STUB_INPUT_LOG.
+type StubInput = { event: 'spawn'; pid: number } | { event: 'paste' | 'submit'; text: string };
+const inputLogPath = (): string => join(dirs.configDir, 'stub-input.jsonl');
+const stubInputs = (): StubInput[] =>
+  existsSync(inputLogPath())
+    ? readFileSync(inputLogPath(), 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as StubInput)
+    : [];
+const inputsOf = (event: StubInput['event']): StubInput[] => stubInputs().filter((entry) => entry.event === event);
+const textsOf = (event: 'paste' | 'submit'): string[] => inputsOf(event).map((entry) => (entry as { text: string }).text);
+
 const chatsRoot = (taskDir: string): string => join(dirs.configDir, 'projects', basename(taskDir), 'chats');
 
 const latestFirstMsg = (taskDir: string): string => {
@@ -414,8 +424,8 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 90_000);
 
-  it('new_session errors while busy and resets an idle session', async () => {
-    boot('slow', { delayMs: 2500 });
+  it('new_session errors while busy and sends /new to the idle Instance without respawning it', async () => {
+    boot('slow', { delayMs: 2500, stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const running = requestPipe<{ ok: boolean; answer?: string }>(
@@ -428,16 +438,73 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(busy.ok).toBe(false);
     expect(busy.error).toMatch(/active or queued/i);
     expect((await running).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready' });
+    expect(textsOf('submit')).toEqual(['/new', 'running']);
     const idle = await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' });
     expect(idle.ok).toBe(true);
-    await pollStatus(pipeName, { state: 'stopped' });
+    expect(textsOf('submit')).toEqual(['/new', 'running', '/new']);
+    await sleep(600);
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     const next = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'after reset' },
       30_000,
     );
     expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): after reset' });
+    expect(inputsOf('spawn')).toHaveLength(1);
   }, 90_000);
+
+  it('new_session at the picker sends nothing and leaves the Instance alone', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'picker' });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' })).ok).toBe(true);
+    await sleep(600);
+    await pollStatus(pipeName, { state: 'picker' });
+    expect(textsOf('submit')).toEqual([]);
+    expect(inputsOf('spawn')).toHaveLength(1);
+  }, 60_000);
+
+  // Issue #18: prompts go in as one bracketed paste and one submit, so a newline in the
+  // prompt never submits it early.
+  it('pastes a multi-line prompt between bracketed-paste markers and submits it exactly once', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const prompt = 'first line\nsecond line\n\n  indented fourth line\r\nlast line';
+    const done = await requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt },
+      30_000,
+    );
+    expect(done).toMatchObject({ ok: true, answer: `stub(DeepSeek V4.1 Flash): ${prompt}` });
+    expect(textsOf('paste')).toEqual([prompt]);
+    expect(textsOf('submit')).toEqual(['/new', prompt]);
+    expect(latestFirstMsg(dirs.taskDir)).toBe(prompt);
+  }, 60_000);
+
+  it('fails a Task whose Turn ends without an Answer with no_answer, keeping the Instance', async () => {
+    boot('no-answer', { stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    const failed = await requestPipe<{ ok: boolean; answer?: string; error?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'silent' },
+      30_000,
+    );
+    expect(failed.ok).toBe(false);
+    expect(failed.answer).toBeUndefined();
+    expect(failed.error).toMatch(/no_answer/);
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
+    const next = await requestPipe<{ ok: boolean; answer?: string }>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'answered' },
+      30_000,
+    );
+    expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): answered' });
+    expect(inputsOf('spawn')).toHaveLength(1);
+  }, 60_000);
 
   // Issue #16: the Watchdog fails a stuck Task without resubmitting it, respawns the
   // Instance, and the next queued Task runs normally.

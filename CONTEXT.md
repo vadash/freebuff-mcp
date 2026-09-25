@@ -67,17 +67,18 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
   minutes of the Hour session remain (`bound_dir_locked`).
 - **Task**: one `run_prompt` call: a prompt queued against the Bound directory.
 - **Queue**: FIFO of Tasks waiting behind the active one, depth 4. A full Queue
-  answers `busy` with a position.
+  fails with `busy` and a position.
 - **Conversation**: freebuff's chat context. `/new` starts a fresh one; the
-  Supervisor sends it before every Task. The `new_session` tool starts a new
-  Conversation. _Avoid:_ "session" (for the context).
-- **Turn**: the model's run on one Task, from submit to Turn end.
+  Supervisor sends it before every Task. The `new_session` tool sends `/new` to the
+  running Instance, which is never killed for it. _Avoid:_ "session" (for the context).
+- **Turn**: the model's run on one Task, from submit to Turn end. The prompt
+  goes in as one bracketed paste and is submitted once.
 - **Ack**: the Chat store line proving freebuff received the prompt. One retry
   if it is missing.
 - **Turn end**: the `Main prompt finished` line in the Chat store after the
   Task's baseline.
 - **Answer**: `data.fullResponse` of the Turn end line; what `run_prompt`
-  returns.
+  returns. A Turn end without one fails the Task with `no_answer`.
 - **Big payload**: a prompt over 64 KB, written to a file in the Bound
   directory and sent as a file reference.
 

@@ -45,9 +45,9 @@ freebuff instance survives it.
 | Tool | Arguments | Result |
 |---|---|---|
 | `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. Same directory is a no-op. The Bind lock refuses a switch while more than 30 minutes of the Hour session remain. |
-| `run_prompt` | `dir`, `prompt` | Queues the prompt and waits for freebuff's final answer. `dir` must equal the bound directory. Prompts over 64 KB are written to a file in that directory and passed by reference. |
+| `run_prompt` | `dir`, `prompt` | Queues the prompt and waits for freebuff's final answer. `dir` must equal the bound directory. The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in that directory and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
-| `new_session` | none | Starts a fresh conversation. Refused while a task is active or queued. |
+| `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op at the Model picker or with no instance). Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
 | `doctor` | none | Checks the markers expected on the current screen (picker, ready, Continue, Countdown, Freebucks) against the live screen; returns `{ ok, skipped, failures }`. `skipped` (with `ok: false`) when no idle instance is running. |
 
@@ -79,14 +79,14 @@ is never resent: a half-run coding task is not safe to repeat.
 | `dir_mismatch` | freebuff came up in a different directory than the bound one. |
 | `ready_timeout` | freebuff never reached its input box (includes a screen excerpt). |
 | `ack_missing` | freebuff did not record the prompt, even after one retry. |
+| `no_answer` | The turn ended without a final answer. freebuff stays up and the next queued task runs. |
 | `process_exited` | freebuff exited while starting up (e.g. during `bind`). |
 | `frozen` | Watchdog: neither the screen (ignoring the countdown and Freebucks lines) nor the chat log changed for 3 minutes. |
 | `crashed` | Watchdog: freebuff exited mid-task. |
 | `deadline` | Watchdog: the task was still running 20 minutes after it started, even if it kept producing output. |
 | `bound_dir_locked` | Switching to a different directory is refused while more than 30 minutes of the Hour session remain. The message carries the Bound directory and the minutes until it unlocks. The escape hatch is restarting the supervisor (the Bound directory is not persisted). Re-binding the same directory is a no-op; with no Hour session running, or 30 minutes or less left, switching is allowed. |
 
-A full queue returns `{ "busy": true, "position": N }`, currently not flagged
-as an error.
+A full queue fails with `isError: true` and the text `{ "busy": true, "position": N }`.
 
 ### Error log
 
@@ -112,10 +112,7 @@ Set `FREEBUFF_ERROR_LOG` in the supervisor's environment to write it elsewhere.
 
 ## Known issues
 
-Tracked against ADR-0001; fixes are being planned.
-
-- **Multi-line prompts may submit early.** Prompts are typed as raw text, not
-  as a bracketed paste.
+Tracked against ADR-0001. None open at the moment.
 
 ## Real smoke test
 

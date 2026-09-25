@@ -71,7 +71,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   );
   server.tool(
     'run_prompt',
-    'Queue a prompt against the bound directory and wait for the final answer. Returns {busy, position} when the queue is full.',
+    'Queue a prompt against the bound directory and wait for the final answer. A full queue fails with {busy, position}; a turn that ends without an answer fails with no_answer.',
     { dir: z.string().describe('Must equal the bound directory'), prompt: z.string().describe('Task prompt') },
     async ({ dir, prompt }) =>
       result(await client.request({ op: 'run_prompt', dir, prompt }, client.taskTimeoutMs + REQUEST_TIMEOUT_MS)),
@@ -84,7 +84,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   );
   server.tool(
     'new_session',
-    'Reset the session context. Rejected while a task is active or queued; the next task starts with fresh context.',
+    'Start a new conversation by sending /new to the running freebuff, which keeps running. Rejected while a task is active or queued.',
     {},
     async () => result(await client.request({ op: 'new_session' })),
   );
@@ -122,7 +122,7 @@ const result = (response: SupervisorResponse): ToolContent => {
     case 'ok':
       return { content: [{ type: 'text', text: 'ok' }] };
     case 'busy':
-      return { content: [{ type: 'text', text: JSON.stringify({ busy: true, position: response.position }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ busy: true, position: response.position }) }], isError: true };
     case 'error':
       return { content: [{ type: 'text', text: response.error }], isError: true };
   }
