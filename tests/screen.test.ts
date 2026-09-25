@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { KNOWN_ERROR_STRINGS, SINGLE_INSTANCE } from '../src/protocol/markers.ts';
+import { KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeSignature, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
@@ -95,7 +95,13 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
 
   it('matches the single-instance dialog marker against the real capture', async () => {
     expect(classifyScreen(await screen('single-instance.ansi')).ready).toBe(false);
-    expect(load('single-instance.ansi')).toContain(SINGLE_INSTANCE);
+    expect(mentionsSingleInstance(await load('single-instance.ansi'))).toBe(true);
+  });
+
+  it('matches the 0.0.198 session-in-use dialog marker against the real capture', async () => {
+    expect(classifyScreen(await screen('session-in-use.ansi')).ready).toBe(false);
+    expect(classifyScreen(await screen('session-in-use.ansi')).picker).toBeNull();
+    expect(mentionsSingleInstance(await load('session-in-use.ansi'))).toBe(true);
   });
 
   it('parses every Countdown wording captured in the wild', () => {

@@ -76,6 +76,19 @@ appear with a STALE lock file (Instance killed mid-session, dead pid left behind
 raised it both at spawn and at session start, so the supervisor must treat `Take over` as
 the recovery path after verifying the recorded pid is dead.
 
+## session-in-use.ansi
+
+The same dialog as reworded by freebuff 0.0.198 (2026-09 update), captured after SIGKILL
+of a mid-session Instance.
+
+- `Session already in use`
+- `Limited access without a subscription allows one session across CLI and Desktop.`
+- Buttons: `Take over` and `Choose model`; hint `H · History`
+
+Notes: 0.0.198 writes NO pid record to `~/.config/manicode` (no
+`freebuff-instance-owner.json`, no `freebuff.lock`); the supervisor must recover via the
+dialog's `Take over` and read the Instance pid from its own PTY.
+
 ## error.ansi
 
 CLI error rendering for an unknown slash command, captured while an Hour session runs.

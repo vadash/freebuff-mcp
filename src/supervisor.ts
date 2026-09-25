@@ -37,6 +37,7 @@ export interface StatusPayload {
   boundDir: string | null;
   queueDepth: number;
   activeModel: string | null;
+  instancePid: number | null;
   hourSessionMinutesLeft: number | null;
   freebucksDaily: number | null;
   needsLogin: boolean;
@@ -137,6 +138,7 @@ export class Supervisor {
           boundDir: this.boundDir,
           queueDepth: this.queue.length,
           activeModel,
+          instancePid: this.driver.instancePid(),
           hourSessionMinutesLeft: probe.hourSessionMinutesLeft,
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),

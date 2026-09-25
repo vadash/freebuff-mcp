@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { spawn, type IPty } from 'node-pty';
 import { SCREEN_COLS, SCREEN_ROWS } from '../../src/config.ts';
 import { sleep } from '../../src/util.ts';
-import { CHATS_DIRNAME, CONNECTING, LOG_FILENAME, LOGIN_REQUIRED, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE, TURN_END_MSG } from '../../src/protocol/markers.ts';
+import { CHATS_DIRNAME, CONNECTING, LOG_FILENAME, LOGIN_REQUIRED, PROJECTS_DIRNAME, READY_PROMPT, TURN_END_MSG, mentionsSingleInstance } from '../../src/protocol/markers.ts';
 import { projectKey, type ChatDirSnapshot } from '../../src/protocol/chatStore.ts';
 import { classifyScreen, CliTerminalScreen } from '../../src/protocol/screen.ts';
 import { defaultDriverOptions } from '../../src/driver.ts';
@@ -36,7 +36,7 @@ const knownScreen = (text: string): boolean =>
   text.includes(READY_PROMPT) ||
   text.includes(CONNECTING) ||
   text.includes(LOGIN_REQUIRED) ||
-  text.includes(SINGLE_INSTANCE) ||
+  mentionsSingleInstance(text) ||
   text.includes('Press Enter to continue') ||
   text.includes('Session ended') ||
   text.includes(TURN_END_MSG) ||

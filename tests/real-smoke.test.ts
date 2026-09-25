@@ -13,7 +13,7 @@ import {
   projectKey,
   type TurnBaseline,
 } from '../src/protocol/chatStore.ts';
-import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, PROJECTS_DIRNAME, READY_PROMPT, SINGLE_INSTANCE } from '../src/protocol/markers.ts';
+import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, PROJECTS_DIRNAME, READY_PROMPT, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
 import { flatDump, RealCli, realChatsRoot, snapshotChats } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
@@ -27,17 +27,19 @@ const captureRawDir = join(captureCwd, 'raw');
 // Session expiry costs a real hour of wall clock; the expiring countdown shows earlier.
 const EXPIRY_WAIT_MS = 55 * 60_000;
 const COUNTDOWN_LINE = /\d+(?:m|h) left|\d+:\d\d left/;
-// ADR-0001 #6: the pick rule lands on the affordable DeepSeek row on a funded day.
-const expectedModel = 'DeepSeek V4.1 Flash';
+// ADR-0001 #6: first affordable deepseek, else first glm. The 2026-09 service update
+// shrank the picker to a single GLM 5.3 Flash row, so the rule lands on it.
+const expectedModel = 'GLM 5.3 Flash';
 const trivialPrompt = 'Reply with exactly one word and nothing else: ping';
 // Issue #18: a ~40 KB multi-line prompt, under the Big payload threshold, so it goes in
-// as one bracketed paste; the Chat store must hold it byte for byte.
+// as one bracketed paste; the Chat store must keep it intact (the 2026-09 CLI prefixes a
+// `[Pasted Text]` label on bigger pastes, so the ack matches the prompt as tail).
 const bigPrompt = [
   'The numbered lines below are filler. Do not read files or run tools.',
   ...Array.from({ length: 560 }, (_, i) => `${String(i + 1).padStart(4, '0')} filler line for the bracketed-paste smoke, ignore it entirely.`),
   'Reply with exactly one word and nothing else: pong',
 ].join('\n');
-const runTimeoutMs = 60_000;
+const runTimeoutMs = 120_000;
 
 const pidAlive = (pid: number): boolean => {
   try {
@@ -50,33 +52,23 @@ const pidAlive = (pid: number): boolean => {
 
 const firstErrorLine = (error: unknown): string => (error instanceof Error ? error.message.split('\n')[0] : String(error));
 
-// Resolves the single-instance dialog the real CLI raises on a stale directory lock
-// (killed instance). Takes over only when the lock's pid is provably dead — a live
-// holder is a real second instance, which the capture must not steal.
+// Resolves the single-instance dialog the real CLI raises after a killed instance
+// (or a live second one). Takes over only when no provably live local holder exists —
+// a live holder is a real second instance, which the capture must not steal.
 const recoverStaleLockDialog = async (cli: RealCli, why: string): Promise<void> => {
+  // 0.0.198+ writes no pid record; refuse only a provably live local holder.
   const ownerPath = join(defaultDriverOptions().configDir, 'freebuff-instance-owner.json');
   let lockPid: unknown = null;
   try {
     lockPid = JSON.parse(readFileSync(ownerPath, 'utf8').trim())?.pid;
   } catch {
-    // no owner file: nothing to verify, but the dialog is up — treat as unsafe anyway
+    // no owner record: nothing to verify, but the dialog is up — take over
   }
-  if (!Number.isInteger(lockPid) || pidAlive(lockPid as number)) {
-    throw new Error(`single-instance dialog at ${why} with a live or unreadable lock holder (pid ${String(lockPid)}); refusing to take over`);
+  if (Number.isInteger(lockPid) && pidAlive(lockPid as number)) {
+    throw new Error(`single-instance dialog at ${why} with a live lock holder (pid ${String(lockPid)}); refusing to take over`);
   }
-  console.warn(`[capture] stale single-instance lock (dead pid ${String(lockPid)}); taking over at ${why}`);
+  console.warn(`[capture] single-instance dialog (stale holder ${String(lockPid)}); taking over at ${why}`);
   cli.type('\r');
-};
-
-const livePid = (configDir: string): number => {
-  const ownerPath = join(configDir, 'freebuff-instance-owner.json');
-  try {
-    const raw: unknown = JSON.parse(readFileSync(ownerPath, 'utf8').trim());
-    if (typeof raw === 'object' && raw !== null && 'pid' in raw && typeof raw.pid === 'number') return raw.pid;
-  } catch {
-    // fall through to the legacy lock
-  }
-  return Number.parseInt(readFileSync(join(configDir, 'freebuff.lock'), 'utf8').trim(), 10);
 };
 
 const chatStoreAnswer = (configDir: string, dir: string): string => {
@@ -131,20 +123,30 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     expect(big.ok, big.error).toBe(true);
     expect(chatStoreHoldsPrompt(configDir, repoRoot, bigPrompt), 'the Chat store does not hold the ~40 KB prompt intact').toBe(true);
 
-    const firstPid = livePid(configDir);
+    // The 2026-09 CLI no longer writes its pid to disk; the status op reports the pid
+    // the supervisor's own PTY holds.
+    const statusPid = async (): Promise<number> =>
+      Number((await requestPipe<{ instancePid: number | null }>(pipeName, { op: 'status' })).instancePid);
+    const firstPid = await statusPid();
     process.kill(firstPid, 'SIGKILL');
     const goneDeadline = Date.now() + 10_000;
     while (pidAlive(firstPid) && Date.now() < goneDeadline) await sleep(100);
     expect(pidAlive(firstPid), `freebuff process ${firstPid} survived the kill`).toBe(false);
+    // The pty exit event lands after the OS-level death; respawning before the driver
+    // observes it hands the new task the dying Instance.
+    const observedDeadline = Date.now() + 10_000;
+    while ((await statusPid()) === firstPid && Date.now() < observedDeadline) await sleep(100);
 
+    // Above the supervisor's own 120 s task deadline, so a watchdog verdict is
+    // delivered as a reply instead of racing the pipe timeout.
     const respawned = await requestPipe<{ ok: boolean; answer?: string; error?: string }>(
       pipeName,
       { op: 'run_prompt', dir: repoRoot, prompt: trivialPrompt },
-      runTimeoutMs,
+      150_000,
     );
     expect(respawned.ok, respawned.error).toBe(true);
     await pollStatus(pipeName, { state: 'ready', activeModel: expectedModel, queueDepth: 0 });
-    const secondPid = livePid(configDir);
+    const secondPid = await statusPid();
     expect(secondPid).not.toBe(firstPid);
     expect(pidAlive(secondPid), `respawned freebuff process ${secondPid} is not alive`).toBe(true);
   }, 300_000);
@@ -227,7 +229,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       // so the second spawn must happen once the session runs, not at the picker.
       const second = new RealCli(captureCwd);
       try {
-        await second.waitScreen('single-instance dialog', (t) => t.includes(SINGLE_INSTANCE), 120_000);
+        await second.waitScreen('single-instance dialog', (t) => mentionsSingleInstance(t), 120_000);
         second.saveFixture(screenFixturesDir, captureRawDir, 'single-instance');
       } catch (error) {
         console.warn(`[capture] single-instance skipped: ${firstErrorLine(error)}`);
@@ -299,11 +301,11 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       const toPicker = async (): Promise<void> => {
         await cli.waitScreen(
           'picker, resumed session, dialog, or continue screen',
-          (t) => classifyScreen(t).picker !== null || t.includes(LOGIN_REQUIRED) || t.includes('Press Enter to continue') || t.includes(SINGLE_INSTANCE) || inReadyBox(t),
+          (t) => classifyScreen(t).picker !== null || t.includes(LOGIN_REQUIRED) || t.includes('Press Enter to continue') || mentionsSingleInstance(t) || inReadyBox(t),
           180_000,
         );
         if (cli.text().includes(LOGIN_REQUIRED)) throw new Error('freebuff is not logged in; log in and rerun the capture');
-        if (cli.text().includes(SINGLE_INSTANCE)) {
+        if (mentionsSingleInstance(cli.text())) {
           await recoverStaleLockDialog(cli, 'spawn');
           await toPicker();
         } else if (cli.text().includes('Press Enter to continue')) {

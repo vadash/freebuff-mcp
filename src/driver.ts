@@ -10,7 +10,7 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, SINGLE_INSTANCE, VERSION_BANNER_REGEX } from './protocol/markers.ts';
+import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
 import { sleep } from './util.ts';
 
@@ -112,6 +112,12 @@ export class FreebuffDriver {
 
   needsLogin(): boolean {
     return this.loginRequired;
+  }
+
+  /** The running Instance's pid, or null once it has exited. The 2026-09 CLI no longer writes its pid to disk. */
+  instancePid(): number | null {
+    const instance = this.live;
+    return instance !== null && !instance.exited ? instance.pty.pid : null;
   }
 
   probe(): {
@@ -325,7 +331,7 @@ export class FreebuffDriver {
         this.loginRequired = true;
         throw new FreebuffDriverError('needs_login');
       }
-      if (pressEnterWhenBlocked(text.includes(SINGLE_INSTANCE))) {
+      if (pressEnterWhenBlocked(mentionsSingleInstance(text))) {
         await sleep(POLL_MS);
         continue;
       }

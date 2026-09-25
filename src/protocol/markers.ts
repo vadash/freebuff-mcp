@@ -6,7 +6,11 @@ export const CONNECTING = 'Connecting';
 export const PICKER_TITLE = 'Start coding for free';
 export const TURN_END_MSG = 'Main prompt finished';
 export const LOGIN_REQUIRED = 'Not authenticated';
-export const SINGLE_INSTANCE = 'Only one freebuff instance is allowed';
+// Single-instance dialogs: the 2026-09 CLI (0.0.198+) says 'Session already in use';
+// older builds said 'Only one freebuff instance is allowed at a time.'
+export const SINGLE_INSTANCE_MARKERS = ['Session already in use', 'Only one freebuff instance is allowed'];
+export const mentionsSingleInstance = (text: string): boolean =>
+  SINGLE_INSTANCE_MARKERS.some((marker) => text.includes(marker));
 
 // Continue screen after an Hour session expires (continue.ansi).
 export const SESSION_ENDED = 'Session ended';
