@@ -416,80 +416,59 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): after reset' });
   }, 90_000);
 
-  it('fails a task on timeout and frees the session', async () => {
-    proc = startSupervisor({
-      pipeName,
-      mode: 'slow',
-      delayMs: 8000,
-      taskTimeoutMs: 1500,
-      ...dirs,
-    });
-    await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const failed = await requestPipe<{ ok: boolean; error?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'never finishes' },
-      30_000,
-    );
-    expect(failed.ok).toBe(false);
-    expect(failed.error).toMatch(/timed out/i);
-    await pollStatus(pipeName, { state: 'stopped', queueDepth: 0 });
-  }, 30_000);
+  // Issue #16: the Watchdog fails a stuck Task without resubmitting it, respawns the
+  // Instance, and the next queued Task runs normally.
+  const promptCount = (prompt: string): number => {
+    const root = chatsRoot(dirs.taskDir);
+    const logs = readdirSync(root).map((dir) => readFileSync(join(root, dir, 'log.jsonl'), 'utf8'));
+    return logs.join('\n').split(JSON.stringify({ msg: prompt })).length - 1;
+  };
 
-  it('respawns after a mid-turn crash, re-runs the task, and keeps the queue going', async () => {
-    boot('kill-mid-turn');
-    await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const first = requestPipe<{ ok: boolean; answer?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'first task' },
-      60_000,
-    );
-    const second = requestPipe<{ ok: boolean; answer?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second task' },
-      60_000,
-    );
-    await pollStatus(pipeName, { queueDepth: 1 });
-    await expect(first).resolves.toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): first task' });
-    await expect(second).resolves.toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second task' });
-  }, 90_000);
-
-  it('fails a task with reason crashed once respawns are exhausted', async () => {
-    boot('kill-always');
-    await waitForPipe(pipeName, 10_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
-    const doomed = await requestPipe<{ ok: boolean; error?: string }>(
-      pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'doomed' },
-      60_000,
-    );
-    expect(doomed.ok).toBe(false);
-    expect(doomed.error).toMatch(/crashed/);
-    await pollStatus(pipeName, { state: 'stopped', queueDepth: 0 });
-  }, 60_000);
-
-  it('restarts a frozen driver instead of timing out and the task still completes', async () => {
-    proc = startSupervisor({
-      pipeName,
-      mode: 'freeze',
-      freezeMs: 1200,
-      taskTimeoutMs: 20_000,
-      ...dirs,
-    });
+  const failFirstThenRunNext = async (
+    prompt: string,
+  ): Promise<{ failed: { ok: boolean; error?: string }; elapsedMs: number }> => {
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const started = Date.now();
-    const done = await requestPipe<{ ok: boolean; answer?: string }>(
+    const first = requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt }, 60_000);
+    const next = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
-      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'thaw' },
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'next task' },
       60_000,
     );
-    expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): thaw' });
-    expect(Date.now() - started).toBeLessThan(30_000);
-    const root = chatsRoot(dirs.taskDir);
-    const logs = readdirSync(root).map((dir) => readFileSync(join(root, dir, 'log.jsonl'), 'utf8'));
-    expect(logs.join('\n').split('"msg":"thaw"').length - 1).toBeGreaterThanOrEqual(2);
+    const failed = await first;
+    const elapsedMs = Date.now() - started;
+    await expect(next).resolves.toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): next task' });
+    expect(promptCount(prompt)).toBe(1);
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
+    return { failed, elapsedMs };
+  };
+
+  it('fails a task frozen when only the Countdown changes, with Screen lines, and never resubmits it', async () => {
+    boot('freeze', { freezeMs: 1500, taskTimeoutMs: 30_000 });
+    const { failed, elapsedMs } = await failFirstThenRunNext('stuck');
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toMatch(/^watchdog failure: frozen/);
+    expect(failed.error).toContain('Enter a coding task');
+    expect(elapsedMs).toBeLessThan(15_000);
+  }, 90_000);
+
+  it('fails a task crashed when freebuff dies mid-turn, with Screen lines, and never resubmits it', async () => {
+    boot('kill-mid-turn');
+    const { failed } = await failFirstThenRunNext('doomed');
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toMatch(/^watchdog failure: crashed/);
+    expect(failed.error).toContain('Enter a coding task');
+  }, 90_000);
+
+  it('fails a task that keeps producing output at its deadline', async () => {
+    boot('chatty', { freezeMs: 1000, taskTimeoutMs: 4000 });
+    const { failed, elapsedMs } = await failFirstThenRunNext('endless');
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toMatch(/^watchdog failure: deadline/);
+    expect(failed.error).toContain('working');
+    expect(elapsedMs).toBeGreaterThanOrEqual(3_900);
+    expect(elapsedMs).toBeLessThan(15_000);
   }, 90_000);
 
   it('kills the live foreign lock holder at bind and completes the task', async () => {

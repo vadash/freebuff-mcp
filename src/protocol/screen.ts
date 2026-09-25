@@ -112,6 +112,23 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
   };
 }
 
+/** The Screen as the Watchdog compares it: Countdown and Freebucks lines dropped, so a
+ *  ticking timer never masks a freeze. */
+export const freezeSignature = (text: string): string =>
+  text
+    .split('\n')
+    .filter((line) => !COUNTDOWN_REGEX.test(line) && !FREEBUCKS_BALANCE_REGEX.test(line) && !FREEBUCKS_LEFT_REGEX.test(line))
+    .join('\n');
+
+/** The last `count` non-blank Screen lines, right-trimmed, for failure messages. */
+export const screenExcerpt = (text: string, count: number): string =>
+  text
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== '')
+    .slice(-count)
+    .join('\n');
+
 export const flattenScreen = async (chunks: string[]): Promise<string> => {
   const screen = new CliTerminalScreen();
   for (const chunk of chunks) screen.write(chunk);

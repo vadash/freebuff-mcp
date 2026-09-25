@@ -33,7 +33,7 @@ const configDir = process.env.FREEBUFF_CONFIG_DIR;
 const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
 
 // Env controls (issue #11): Countdown minutes, Freebucks balance, picker entries and prices.
-const countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
+let countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
 const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
 const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? '20/25').split('/').map(Number);
 const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
@@ -162,8 +162,10 @@ const submit = async (prompt) => {
   }
   const dirName = newChatRequested ? `chat-new-${chatCounter++}` : `chat-${chatCounter++}`;
   newChatRequested = false;
-  const crashThisTurn = mode === 'kill-always' || (mode === 'kill-mid-turn' && !chatsExist());
+  // Issue #16: only the first Turn misbehaves, so the next queued Task can complete.
+  const crashThisTurn = mode === 'kill-mid-turn' && !chatsExist();
   const freezeThisTurn = mode === 'freeze' && !chatsExist();
+  const chatterThisTurn = mode === 'chatty' && !chatsExist();
   const dir = join(chatsRoot(), dirName);
   mkdirSync(dir, { recursive: true });
   lastLogPath = join(dir, 'log.jsonl');
@@ -175,8 +177,21 @@ const submit = async (prompt) => {
     setTimeout(() => process.exit(9), 100);
     return;
   }
+  // A freeze where only the Countdown keeps ticking on the Screen.
   if (freezeThisTurn) {
-    for (;;) await sleep(1_000);
+    for (;;) {
+      await sleep(200);
+      countdownMin = Math.max(1, countdownMin - 1);
+      out(readyScreen());
+    }
+  }
+  // A Turn that never ends but keeps writing to the Screen and the Chat store.
+  if (chatterThisTurn) {
+    for (let tick = 0; ; tick++) {
+      await sleep(200);
+      appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: `progress ${tick}` }) + '\n');
+      out(`working ${tick}\r\n`);
+    }
   }
   await sleep(30 + Math.random() * 50);
   appendFileSync(

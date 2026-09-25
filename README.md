@@ -67,7 +67,11 @@ freebuff instance survives it.
 ### Failures
 
 Failed calls return `isError: true` with a message. Driver failures read
-`freebuff driver failure: <reason>`; bind rejections read `bind rejected: <reason>`:
+`freebuff driver failure: <reason>`; bind rejections read `bind rejected: <reason>`;
+watchdog failures read `watchdog failure: <reason>: <detail>` followed by the
+last screen lines. After a watchdog failure the supervisor respawns freebuff
+(the Hour session resumes) and the next queued task runs normally. The prompt
+is never resent: a half-run coding task is not safe to repeat.
 
 | Reason | Meaning |
 |---|---|
@@ -75,7 +79,10 @@ Failed calls return `isError: true` with a message. Driver failures read
 | `dir_mismatch` | freebuff came up in a different directory than the bound one. |
 | `ready_timeout` | freebuff never reached its input box (includes a screen excerpt). |
 | `ack_missing` | freebuff did not record the prompt, even after one retry. |
-| `process_exited` | freebuff exited; the watchdog respawns it and resends the prompt, up to 2 times. |
+| `process_exited` | freebuff exited while starting up (e.g. during `bind`). |
+| `frozen` | Watchdog: neither the screen (ignoring the countdown and Freebucks lines) nor the chat log changed for 3 minutes. |
+| `crashed` | Watchdog: freebuff exited mid-task. |
+| `deadline` | Watchdog: the task was still running 20 minutes after it started, even if it kept producing output. |
 | `bound_dir_locked` | Switching to a different directory is refused while more than 30 minutes of the Hour session remain. The message carries the Bound directory and the minutes until it unlocks. The escape hatch is restarting the supervisor (the Bound directory is not persisted). Re-binding the same directory is a no-op; with no Hour session running, or 30 minutes or less left, switching is allowed. |
 
 A full queue returns `{ "busy": true, "position": N }`, currently not flagged
@@ -100,10 +107,6 @@ Tracked against ADR-0001; fixes are being planned.
 
 - **Multi-line prompts may submit early.** Prompts are typed as raw text, not
   as a bracketed paste.
-- **Freeze detection is weak.** A task counts as frozen only after 10 minutes
-  with no screen or chat-log change, and the on-screen countdown may keep it
-  from ever firing. The 20-minute task timeout restarts on each respawn, and
-  a respawn resends the prompt.
 - **`doctor` does not look at the live screen.** It only compares the code's
   constants with committed fixtures, so it cannot detect a freebuff update.
 

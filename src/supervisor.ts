@@ -1,12 +1,12 @@
 import { statSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { basename, join, resolve } from 'node:path';
-import { FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, MAX_TASK_RESPAWNS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
+import { FAILURE_SCREEN_LINES, FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { runDoctor } from './doctor.ts';
-import { classifyScreen } from './protocol/screen.ts';
+import { classifyScreen, freezeSignature, screenExcerpt } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -53,10 +53,22 @@ export type SupervisorResponse =
 interface QueuedTask {
   prompt: string;
   cancelled?: boolean;
+  // Answered while the Watchdog respawns the Instance behind it; no longer cancellable.
+  answered?: boolean;
   reply: (response: SupervisorResponse) => void;
 }
 
-const FROZEN = Symbol('frozen');
+type WatchdogReason = 'frozen' | 'crashed' | 'deadline';
+
+// The Watchdog's verdict on a Task, with the last Screen lines for the caller.
+class WatchdogFailure extends Error {
+  readonly reason: WatchdogReason;
+  constructor(reason: WatchdogReason, detail: string, screen: string) {
+    super(`watchdog failure: ${reason}: ${detail}\nlast screen lines:\n${screen}`);
+    this.name = 'WatchdogFailure';
+    this.reason = reason;
+  }
+}
 
 // Issue #14: switching directories abandons an Hour session with more than this
 // much time left on it; the supervisor refuses until the window narrows.
@@ -193,7 +205,7 @@ export class Supervisor {
 
   private async cancelTask(reply: (response: SupervisorResponse) => void): Promise<void> {
     const task = this.active;
-    if (task === null) {
+    if (task === null || task.answered) {
       reply({ ok: false, kind: 'error', error: 'cancel_task failed: no task is active' });
       return;
     }
@@ -212,7 +224,7 @@ export class Supervisor {
   }
 
   private observedState(): SupervisorState {
-    if (this.active !== null) return 'busy';
+    if (this.active !== null && !this.active.answered) return 'busy';
     if (this.state === 'spawning') return 'spawning';
     return this.screenState();
   }
@@ -265,50 +277,50 @@ export class Supervisor {
     void this.runOne(task);
   }
 
+  // Issue #16: one attempt per Task. A freeze, a crash or the deadline fails it and the
+  // prompt is never resubmitted: a half-run coding task is not idempotent.
   private async supervised(task: QueuedTask, prompt: string): Promise<string> {
-    let respawns = 0;
-    const respawnOrLimit = async (): Promise<void> => {
-      if (respawns >= MAX_TASK_RESPAWNS) throw new Error('freebuff driver crashed: respawn limit reached');
-      respawns += 1;
-      await this.respawnDriver();
-    };
-    for (;;) {
-      const work = this.driver.runTask(this.boundDir!, prompt);
-      work.catch(() => {});
-      const freeze = this.watchFreeze(task);
-      let answer: string | typeof FROZEN;
-      try {
-        answer = await Promise.race([
-          withTimeout(work, this.taskTimeoutMs, `task timed out after ${this.taskTimeoutMs}ms`),
-          freeze.promise,
-        ]);
-      } catch (error) {
-        const crash = error instanceof FreebuffDriverError && error.reason === 'process_exited' && !task.cancelled;
-        if (!crash) throw error;
-        await respawnOrLimit();
-        continue;
-      } finally {
-        freeze.stop();
+    const work = this.driver.runTask(this.boundDir!, prompt);
+    work.catch(() => {});
+    const { promise: tripped, reject: trip } = Promise.withResolvers<never>();
+    const deadline = setTimeout(
+      () => trip(this.watchdogFailure('deadline', `still running at its ${formatDuration(this.taskTimeoutMs)} deadline`)),
+      this.taskTimeoutMs,
+    );
+    const freeze = this.watchFreeze(task, () =>
+      trip(this.watchdogFailure('frozen', `no Screen or Chat store change for ${formatDuration(this.freezeMs)}`)),
+    );
+    try {
+      return await Promise.race([work, tripped]);
+    } catch (error) {
+      if (error instanceof FreebuffDriverError && error.reason === 'process_exited' && !task.cancelled) {
+        throw this.watchdogFailure('crashed', 'freebuff exited mid-task');
       }
-      if (answer !== FROZEN) return answer;
-      if (task.cancelled) throw new Error('task cancelled');
-      await respawnOrLimit();
+      throw error;
+    } finally {
+      clearTimeout(deadline);
+      clearInterval(freeze);
     }
   }
 
-  private watchFreeze(task: QueuedTask): { promise: Promise<typeof FROZEN>; stop(): void } {
+  private watchdogFailure(reason: WatchdogReason, detail: string): WatchdogFailure {
+    return new WatchdogFailure(reason, detail, screenExcerpt(this.driver.screenText(), FAILURE_SCREEN_LINES));
+  }
+
+  // Frozen: neither the Screen (minus the Countdown and Freebucks lines) nor the Chat
+  // store changed for the freeze threshold.
+  private watchFreeze(task: QueuedTask, onFrozen: () => void): NodeJS.Timeout {
     const dir = this.boundDir!;
     let lastLog = this.driver.newestLogSize(dir);
-    let lastScreen = this.driver.screenText();
+    let lastScreen = freezeSignature(this.driver.screenText());
     let lastChange = Date.now();
-    const { promise, resolve } = Promise.withResolvers<typeof FROZEN>();
     const timer = setInterval(() => {
       if (this.active !== task || task.cancelled) {
         clearInterval(timer);
         return;
       }
       const log = this.driver.newestLogSize(dir);
-      const screen = this.driver.screenText();
+      const screen = freezeSignature(this.driver.screenText());
       if (log !== lastLog || screen !== lastScreen) {
         lastLog = log;
         lastScreen = screen;
@@ -317,15 +329,23 @@ export class Supervisor {
       }
       if (Date.now() - lastChange >= this.freezeMs) {
         clearInterval(timer);
-        resolve(FROZEN);
+        onFrozen();
       }
     }, Math.min(FREEZE_POLL_MAX_MS, Math.max(FREEZE_POLL_MIN_MS, Math.floor(this.freezeMs / 4))));
-    return { promise, stop: () => clearInterval(timer) };
+    return timer;
   }
 
-  private async respawnDriver(): Promise<void> {
+  // A fresh Instance in the Bound directory, idle at the picker or ready (an unexpired Hour
+  // session resumes). A failed respawn leaves the supervisor stopped; the next Task spawns.
+  private async respawn(): Promise<void> {
     this.state = 'spawning';
     await this.driver.stop();
+    try {
+      this.state = await this.driver.awaitIdle(this.boundDir!);
+    } catch {
+      this.driver.kill();
+      this.state = 'stopped';
+    }
   }
 
   private async runOne(task: QueuedTask): Promise<void> {
@@ -341,13 +361,20 @@ export class Supervisor {
       this.state = this.screenState();
       task.reply({ ok: true, kind: 'answer', answer });
     } catch (error) {
-      this.driver.kill();
-      this.state = 'stopped';
-      task.reply(
-        task.cancelled
-          ? { ok: false, kind: 'error', error: 'task cancelled' }
-          : { ok: false, kind: 'error', error: errorMessage(error) },
-      );
+      if (!task.cancelled && error instanceof WatchdogFailure) {
+        // Reply first: the caller is freed while the Instance respawns behind it.
+        task.answered = true;
+        task.reply({ ok: false, kind: 'error', error: error.message });
+        await this.respawn();
+      } else {
+        this.driver.kill();
+        this.state = 'stopped';
+        task.reply(
+          task.cancelled
+            ? { ok: false, kind: 'error', error: 'task cancelled' }
+            : { ok: false, kind: 'error', error: errorMessage(error) },
+        );
+      }
     } finally {
       if (tempFile !== null) rmSync(tempFile, { force: true });
       this.active = null;
@@ -391,14 +418,10 @@ export class Supervisor {
   }
 }
 
-const withTimeout = async <T>(work: Promise<T>, ms: number, message: string): Promise<T> => {
-  const { promise, reject } = Promise.withResolvers<never>();
-  const timer = setTimeout(() => reject(new Error(message)), ms);
-  try {
-    return await Promise.race([work, promise]);
-  } finally {
-    clearTimeout(timer);
-  }
+const formatDuration = (ms: number): string => {
+  if (ms % 60_000 !== 0) return `${ms / 1000}s`;
+  const minutes = ms / 60_000;
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 };
 
 const versionNewer = (candidate: string, current: string): boolean => {

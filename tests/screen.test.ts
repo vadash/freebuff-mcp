@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { KNOWN_ERROR_STRINGS, SINGLE_INSTANCE } from '../src/protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, countdownMinutes, flattenScreen } from '../src/protocol/screen.ts';
+import { CliTerminalScreen, classifyScreen, countdownMinutes, flattenScreen, freezeSignature, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
 const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');
@@ -140,5 +140,34 @@ describe('flattenScreen', () => {
     expect(text).toContain('line-13\n');
     expect(text).not.toContain('line-12\n');
     expect(text).not.toContain('line-0\n');
+  });
+});
+
+describe('freezeSignature', () => {
+  it('ignores the ticking Countdown on the ready status line', async () => {
+    const ready = await screen('ready.ansi');
+    const ticked = ready.replace('1h left', '59m left');
+    expect(ticked).not.toBe(ready);
+    expect(freezeSignature(ticked)).toBe(freezeSignature(ready));
+  });
+
+  it('ignores the Freebucks lines on the picker and the Continue screen', async () => {
+    const picker = await screen('picker-expanded.ansi');
+    expect(freezeSignature(picker.replace(/\d+\/(\d+) Freebucks daily/, '3/$1 Freebucks daily'))).toBe(freezeSignature(picker));
+    const cont = await screen('continue.ansi');
+    expect(freezeSignature(cont.replace(/\d+ Freebucks left/, '7 Freebucks left'))).toBe(freezeSignature(cont));
+  });
+
+  it('still sees any other Screen change', async () => {
+    const ready = await screen('ready.ansi');
+    expect(freezeSignature(ready + '\nThinking...')).not.toBe(freezeSignature(ready));
+  });
+});
+
+describe('screenExcerpt', () => {
+  it('keeps the last non-blank lines, right-trimmed', () => {
+    const text = ['one   ', '', 'two', '   ', 'three  ', '', ''].join('\n');
+    expect(screenExcerpt(text, 2)).toBe('two\nthree');
+    expect(screenExcerpt(text, 10)).toBe('one\ntwo\nthree');
   });
 });

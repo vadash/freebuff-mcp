@@ -221,7 +221,8 @@ export class FreebuffDriver {
       }
       return await this.awaitTurnEnd(chatsRoot, baseline, assertAlive);
     } catch (error) {
-      if (this.options.keepAlive) this.kill();
+      // A Watchdog respawn may already have replaced this Instance; never kill its successor.
+      if (this.options.keepAlive && this.live === instance) this.kill();
       throw error;
     } finally {
       if (!this.options.keepAlive) pty.kill();
