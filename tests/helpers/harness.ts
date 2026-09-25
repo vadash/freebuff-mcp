@@ -45,7 +45,7 @@ export const errorLogPath = (dirs: HarnessDirs): string => join(dirs.configDir, 
 export const childEnv = (options: HarnessOptions): NodeJS.ProcessEnv => ({
   ...process.env,
   FREEBUFF_SUPERVISOR_PIPE: options.pipeName,
-  FREEBUFF_TASK_TIMEOUT_MS: String(options.taskTimeoutMs ?? 20 * 60_000),
+  FREEBUFF_TASK_TIMEOUT_MS: String(options.taskTimeoutMs ?? 120_000),
   // Keeps the supervisor's error log out of the real user profile.
   FREEBUFF_ERROR_LOG: errorLogPath(options),
   ...(options.freezeMs === undefined ? {} : { FREEBUFF_FREEZE_THRESHOLD_MS: String(options.freezeMs) }),

@@ -37,7 +37,7 @@ const bigPrompt = [
   ...Array.from({ length: 560 }, (_, i) => `${String(i + 1).padStart(4, '0')} filler line for the bracketed-paste smoke, ignore it entirely.`),
   'Reply with exactly one word and nothing else: pong',
 ].join('\n');
-const runTimeoutMs = 480_000;
+const runTimeoutMs = 60_000;
 
 const pidAlive = (pid: number): boolean => {
   try {
@@ -109,7 +109,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
 
   it('binds the repo, runs one trivial task matching the chat store, pastes a ~40 KB prompt intact, idles at ready, and respawns after a driver kill', async () => {
     proc = startSupervisor({ pipeName, mode: 'happy', realDriver: true, ...makeDirs() });
-    await waitForPipe(pipeName, 60_000);
+    await waitForPipe(pipeName, 30_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: repoRoot })).ok).toBe(true);
 
     const done = await requestPipe<{ ok: boolean; answer?: string; error?: string }>(
@@ -147,7 +147,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     const secondPid = livePid(configDir);
     expect(secondPid).not.toBe(firstPid);
     expect(pidAlive(secondPid), `respawned freebuff process ${secondPid} is not alive`).toBe(true);
-  }, 1_200_000);
+  }, 300_000);
 
   it.skipIf(!captureRequested)('captures the real protocol screens as fixtures (set FREEBUFF_CAPTURE=1)', async () => {
     mkdirSync(captureCwd, { recursive: true });

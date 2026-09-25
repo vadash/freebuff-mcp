@@ -76,7 +76,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     const chatDirs = readdirSync(chatsRoot(dirs.configDir, dirs.taskDir));
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
     for (const dir of chatDirs) expect(dir.startsWith('chat-new-')).toBe(true);
-  }, 90_000);
+  }, 30_000);
 
   it('errors run_prompt when nothing is bound, without spawning', async () => {
     const c = boot('happy');
@@ -86,7 +86,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(result.content[0]!.text).toMatch(/bound/i);
     const status = await pollStatus(pipeName, { state: 'stopped', activeModel: null, boundDir: null });
     expect(status.queueDepth).toBe(0);
-  }, 60_000);
+  }, 30_000);
 
   it('errors run_prompt on a directory mismatch, naming the bound directory', async () => {
     const c = boot('happy');
@@ -95,7 +95,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     const result = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.otherDir, prompt: 'x' } })) as CallResult;
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain(resolve(dirs.taskDir));
-  }, 60_000);
+  }, 30_000);
 
   it('surfaces the bind lock as an MCP error naming the bound directory', async () => {
     const c = boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
@@ -105,7 +105,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     const locked = (await c.callTool({ name: 'bind', arguments: { dir: dirs.otherDir } })) as CallResult;
     expect(locked.isError).toBe(true);
     expect(JSON.parse(locked.content[0]!.text ?? '')).toEqual({ boundDir: resolve(dirs.taskDir), unlocksInMinutes: 15 });
-  }, 60_000);
+  }, 30_000);
 
   it('cancels the active task and resets the session through the new tools', async () => {
     const c = boot('slow', { delayMs: 4000 });
@@ -131,7 +131,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       arguments: { dir: dirs.taskDir, prompt: 'after reset' },
     })) as CallResult;
     expect(toolText(next)).toBe('stub(DeepSeek V4.1 Flash): after reset');
-  }, 90_000);
+  }, 30_000);
 
   it('survives the MCP client disconnecting and completes the in-flight task', async () => {
     supervisorProc = startSupervisor({
@@ -173,7 +173,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     ) as Record<string, unknown>;
     expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
-  }, 60_000);
+  }, 30_000);
 
   // Issue #18: a full Queue is a failed call that still carries the position.
   it('returns busy with the queue position as an MCP error once the queue is full', async () => {
@@ -181,7 +181,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     await c.connect(transport!);
     toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
     const tasks = ['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) =>
-      c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt } }, undefined, { timeout: 120_000 }),
+      c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt } }, undefined, { timeout: 30_000 }),
     );
     await pollStatus(pipeName, { queueDepth: 4 });
     const overflow = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'overflow' } })) as CallResult;
@@ -189,7 +189,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(JSON.parse(overflow.content[0]!.text ?? '')).toEqual({ busy: true, position: 5 });
     const answers = (await Promise.all(tasks)).map((r) => toolText(r as CallResult));
     expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(DeepSeek V4.1 Flash): ${prompt}`));
-  }, 120_000);
+  }, 30_000);
 
   it('runs the doctor protocol check through the supervisor op', async () => {
     const c = boot('happy');

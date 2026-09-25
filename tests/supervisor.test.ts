@@ -76,7 +76,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await requestPipe(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'task' }, 30_000);
     await pollStatus(pipeName, { state: 'ready' });
     expect(await requestPipe(pipeName, { op: 'doctor' })).toEqual({ ok: true, kind: 'doctor', skipped: false, failures: [] });
-  }, 60_000);
+  }, 30_000);
 
   it('doctor names the drifted Marker when the live Screen renders altered wording', async () => {
     boot('drift', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1' } });
@@ -86,7 +86,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const report = await requestPipe<{ failures: string[] }>(pipeName, { op: 'doctor' });
     expect(report).toMatchObject({ ok: true, kind: 'doctor', skipped: false });
     expect(report.failures).toEqual([expect.stringMatching(/^COUNTDOWN_REGEX: /)]);
-  }, 60_000);
+  }, 30_000);
 
   it('spawns at bind, lands at the picker, and idles at ready after each task without respawning', async () => {
     boot('happy');
@@ -110,7 +110,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(second).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second task' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     expect(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8')).toBe(lockBefore);
-  }, 60_000);
+  }, 30_000);
 
   it('never sends /end-session across bind, tasks, cancel, and respawn', async () => {
     boot('slow', { delayMs: 1200 });
@@ -127,7 +127,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'stopped' });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'after respawn' }, 30_000)).ok).toBe(true);
     expect(existsSync(join(dirs.configDir, 'end-session.log'))).toBe(false);
-  }, 90_000);
+  }, 30_000);
 
   it('respawns into the unexpired Hour session at ready after a kill', async () => {
     // ADR-0001 §5: the bind lock only guards a different directory; a
@@ -142,7 +142,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'stopped', hourSessionMinutesLeft: 432 });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 432, queueDepth: 0 });
-  }, 60_000);
+  }, 30_000);
 
   it('leaves the continue screen alone while idle and presses enter for the next task', async () => {
     boot('expire');
@@ -160,7 +160,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     expect(second).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
-  }, 60_000);
+  }, 30_000);
 
   it('rebind accepts a new directory once 30 minutes or less remain and the next task runs against the new state', async () => {
     boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '30' } });
@@ -184,7 +184,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(after.ok).toBe(true);
     await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'ready', queueDepth: 0 });
     expect(readdirSync(chatsRoot(dirs.otherDir)).length).toBeGreaterThanOrEqual(1);
-  }, 60_000);
+  }, 30_000);
 
   it('locks bind to a different directory while more than 30 minutes of the Hour session remain', async () => {
     boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
@@ -200,7 +200,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(locked.boundDir).toBe(resolve(dirs.taskDir));
     expect(locked.unlocksInMinutes).toBe(15);
     await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
-  }, 60_000);
+  }, 30_000);
 
   it('locks bind to a different directory while the Hour session outlives a dead idle Instance', async () => {
     boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
@@ -221,7 +221,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(locked.boundDir).toBe(resolve(dirs.taskDir));
     expect(locked.unlocksInMinutes).toBe(15);
     await pollStatus(pipeName, { state: 'stopped', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
-  }, 60_000);
+  }, 30_000);
 
   it('allows switching directories once 30 minutes or less of the Hour session remain', async () => {
     boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '30' } });
@@ -230,7 +230,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 30 });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir })).ok).toBe(true);
     await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.otherDir) });
-  }, 60_000);
+  }, 30_000);
 
   it('allows switching directories while no Hour session is running', async () => {
     boot('happy');
@@ -239,7 +239,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'picker', hourSessionMinutesLeft: null });
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir })).ok).toBe(true);
     await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.otherDir) });
-  }, 60_000);
+  }, 30_000);
 
   it('treats a same-directory rebind as a no-op without respawning', async () => {
     boot('happy');
@@ -251,7 +251,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await sleep(1200);
     expect(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8')).toBe(lockBefore);
     await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.taskDir), queueDepth: 0 });
-  }, 60_000);
+  }, 30_000);
 
   it('replies with an error for unknown ops and malformed json lines', async () => {
     boot('happy');
@@ -291,7 +291,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     expect(after.ok).toBe(true);
     await pollStatus(pipeName, { boundDir: resolve(dirs.otherDir), state: 'ready', queueDepth: 0 });
-  }, 60_000);
+  }, 30_000);
 
   it('rebind purges queued tasks and the next task runs against the new directory', async () => {
     const sup = new Supervisor({
@@ -338,7 +338,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       const driver = (sup as unknown as { driver: { kill(): void } }).driver;
       driver.kill();
     }
-  }, 45_000);
+  }, 30_000);
 
   it('reports busy with a queue position once the queue is full and drains in FIFO order', async () => {
     proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 1200, ...dirs });
@@ -349,7 +349,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       requestPipe<{ ok: boolean; answer?: string }>(
         pipeName,
         { op: 'run_prompt', dir: dirs.taskDir, prompt },
-        60_000,
+        30_000,
       ).then((r) => answers.push(r.answer ?? '')),
     );
     await pollStatus(pipeName, { queueDepth: 4 });
@@ -361,7 +361,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(overflow.position).toBe(5);
     await Promise.all(tasks);
     expect(answers).toEqual(['stub(DeepSeek V4.1 Flash): p1', 'stub(DeepSeek V4.1 Flash): p2', 'stub(DeepSeek V4.1 Flash): p3', 'stub(DeepSeek V4.1 Flash): p4', 'stub(DeepSeek V4.1 Flash): p5']);
-  }, 90_000);
+  }, 30_000);
 
   it('routes prompts above the paste threshold through a temp file and keeps small prompts on the paste path', async () => {
     boot('happy');
@@ -371,7 +371,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const task = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: big },
-      60_000,
+      30_000,
     );
     const tempPath = join(dirs.taskDir, '.freebuff-task-1.md');
     const deadline = Date.now() + 10_000;
@@ -394,7 +394,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(small).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): tiny payload' });
     expect(latestFirstMsg(dirs.taskDir)).toBe('tiny payload');
     expect(existsSync(join(dirs.taskDir, '.freebuff-task-2.md'))).toBe(false);
-  }, 90_000);
+  }, 30_000);
 
   it('cancel_task errors when no task is active', async () => {
     boot('happy');
@@ -417,7 +417,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const survivor = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'survivor' },
-      60_000,
+      30_000,
     );
     await pollStatus(pipeName, { queueDepth: 1 });
     const cancelled = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'cancel_task' }, 30_000);
@@ -428,7 +428,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const survivorResult = await survivor;
     expect(survivorResult).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): survivor' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
-  }, 90_000);
+  }, 30_000);
 
   it('new_session errors while busy and sends /new to the idle Instance without respawning it', async () => {
     boot('slow', { delayMs: 2500, stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
@@ -437,7 +437,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const running = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'running' },
-      60_000,
+      30_000,
     );
     await pollStatus(pipeName, { state: 'busy' });
     const busy = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'new_session' });
@@ -458,7 +458,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): after reset' });
     expect(inputsOf('spawn')).toHaveLength(1);
-  }, 90_000);
+  }, 30_000);
 
   it('new_session at the picker sends nothing and leaves the Instance alone', async () => {
     boot('happy', { stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
@@ -470,7 +470,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'picker' });
     expect(textsOf('submit')).toEqual([]);
     expect(inputsOf('spawn')).toHaveLength(1);
-  }, 60_000);
+  }, 30_000);
 
   // Issue #18: prompts go in as one bracketed paste and one submit, so a newline in the
   // prompt never submits it early.
@@ -488,7 +488,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(textsOf('paste')).toEqual([prompt]);
     expect(textsOf('submit')).toEqual(['/new', prompt]);
     expect(latestFirstMsg(dirs.taskDir)).toBe(prompt);
-  }, 60_000);
+  }, 30_000);
 
   it('fails a Task whose Turn ends without an Answer with no_answer, keeping the Instance', async () => {
     boot('no-answer', { stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
@@ -510,7 +510,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): answered' });
     expect(inputsOf('spawn')).toHaveLength(1);
-  }, 60_000);
+  }, 30_000);
 
   // Issue #16: the Watchdog fails a stuck Task without resubmitting it, respawns the
   // Instance, and the next queued Task runs normally.
@@ -526,11 +526,11 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await waitForPipe(pipeName, 10_000);
     expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
     const started = Date.now();
-    const first = requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt }, 60_000);
+    const first = requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt }, 30_000);
     const next = requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'next task' },
-      60_000,
+      30_000,
     );
     const failed = await first;
     const elapsedMs = Date.now() - started;
@@ -547,7 +547,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(failed.error).toMatch(/^watchdog failure: frozen/);
     expect(failed.error).toContain('Enter a coding task');
     expect(elapsedMs).toBeLessThan(15_000);
-  }, 90_000);
+  }, 30_000);
 
   it('fails a task crashed when freebuff dies mid-turn, with Screen lines, and never resubmits it', async () => {
     boot('kill-mid-turn');
@@ -555,7 +555,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/^watchdog failure: crashed/);
     expect(failed.error).toContain('Enter a coding task');
-  }, 90_000);
+  }, 30_000);
 
   it('fails a task that keeps producing output at its deadline', async () => {
     boot('chatty', { freezeMs: 1000, taskTimeoutMs: 4000 });
@@ -565,7 +565,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(failed.error).toContain('working');
     expect(elapsedMs).toBeGreaterThanOrEqual(3_900);
     expect(elapsedMs).toBeLessThan(15_000);
-  }, 90_000);
+  }, 30_000);
 
   // Issue #17: error-looking Screen lines seen during a Turn are logged, never acted on.
   const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
@@ -594,17 +594,17 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const entries = errorLogEntries();
     expect(entries).toEqual([{ time: expect.any(String), boundDir: resolve(dirs.taskDir), lines: [ERROR_LINE] }]);
     expect(Number.isNaN(Date.parse(entries[0]!.time))).toBe(false);
-  }, 60_000);
+  }, 30_000);
 
   it('logs an error string again when a later Turn prints it while the old copy is still on the Screen', async () => {
     await runTurns([[red(ERROR_LINE)], [red(ERROR_LINE)]], ['first', 'again']);
     expect(errorLogEntries().map((entry) => entry.lines)).toEqual([[ERROR_LINE], [ERROR_LINE]]);
-  }, 60_000);
+  }, 30_000);
 
   it('writes no error log entry for a Turn that prints only red diff lines', async () => {
     await runTurns([[red('- throw new Error("boom");'), red('-   return failed;'), '+ return ok;']], ['diff']);
     expect(errorLogEntries()).toEqual([]);
-  }, 60_000);
+  }, 30_000);
 
   it('kills the live foreign lock holder at bind and completes the task', async () => {
     const lockPath = join(dirs.configDir, 'freebuff.lock');
@@ -622,14 +622,14 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       const done = await requestPipe<{ ok: boolean; answer?: string }>(
         pipeName,
         { op: 'run_prompt', dir: dirs.taskDir, prompt: 'over a live holder' },
-        60_000,
+        30_000,
       );
       expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): over a live holder' });
     } finally {
       holder.kill();
       bystander.kill();
     }
-  }, 60_000);
+  }, 30_000);
 
   it('claims a stale pid lock and spawns', async () => {
     const lockPath = join(dirs.configDir, 'freebuff.lock');
@@ -644,10 +644,10 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     const done = await requestPipe<{ ok: boolean; answer?: string }>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'stale ok' },
-      60_000,
+      30_000,
     );
     expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): stale ok' });
-  }, 60_000);
+  }, 30_000);
 
   it('reports countdown, freebucks, and update fields on status', async () => {
     writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.190' }));
@@ -682,7 +682,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.100' }));
     const stale = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
     expect(stale).toMatchObject({ updatePending: null });
-  }, 60_000);
+  }, 30_000);
 
   it('reports needs_login from bind and returns to stopped', async () => {
     boot('needs-login');
@@ -726,7 +726,7 @@ describe('model pick rule at the picker (ADR-0001 #6)', () => {
       );
       expect(done).toMatchObject({ ok: true, answer: `stub(${expected}): pick` });
       await pollStatus(pipeName, { state: 'ready', activeModel: expected, queueDepth: 0 });
-    }, 60_000);
+    }, 30_000);
   };
 
   pickCase(
