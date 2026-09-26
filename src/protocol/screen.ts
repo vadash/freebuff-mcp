@@ -129,12 +129,20 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
   };
 }
 
+/** A timer line: a parseable Countdown line, or any status-line-shaped line carrying a
+ *  bare duration token — drifted wording (`58m remaining`) misses COUNTDOWN_REGEX, yet
+ *  its ticking minutes must still never enter the Freeze key, or every degraded frame
+ *  would hash differently each minute and multiply Screen dumps (issue #31). Static
+ *  lines are identical between frames, so over-stripping cannot mask a freeze. */
+const isTimerLine = (line: string): boolean =>
+  COUNTDOWN_REGEX.test(line) || (line.includes(STATUS_SEPARATOR) && /\b(?:\d+h(?:\s+\d+m)?|\d+m|\d+:\d\d)\b/.test(line));
+
 /** The Screen as the Watchdog compares it: Countdown and Freebucks lines dropped, so a
  *  ticking timer never masks a freeze. */
 export const freezeKey = (text: string): string =>
   text
     .split('\n')
-    .filter((line) => !COUNTDOWN_REGEX.test(line) && !FREEBUCKS_BALANCE_REGEX.test(line) && !FREEBUCKS_LEFT_REGEX.test(line))
+    .filter((line) => !isTimerLine(line) && !FREEBUCKS_BALANCE_REGEX.test(line) && !FREEBUCKS_LEFT_REGEX.test(line))
     .join('\n');
 
 /** Screen lines carrying a known error Marker, trimmed, one per occurrence, for the error log. */

@@ -150,6 +150,20 @@ describe('FreebuffDriver', () => {
     expect(readdirSync(join(configDir, 'screen-dumps', 'unknown'))).toHaveLength(1);
   }, 30_000);
 
+  // Issue #31: a degraded dialog frame — the strong Marker present, the weak 'Take over'
+  // Marker missing — is dumped too, once per Freeze key, even though the dialog branch
+  // continues before the ordinary dump site. The frame also carries the picker/ready
+  // content under the dialog, so the settle loop proceeds and the Task completes.
+  it('dumps a degraded Session-in-use dialog frame once per Freeze key', async () => {
+    const { driver, dir, configDir } = harness('drift-dialog');
+    writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.198' }));
+    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(GLM 5.3 Flash): hello');
+    const versionDir = join(configDir, 'screen-dumps', '0.0.198');
+    const dumps = readdirSync(versionDir);
+    expect(dumps).toHaveLength(1);
+    expect(readFileSync(join(versionDir, dumps[0]!), 'utf8')).toContain('Session already in use');
+  }, 30_000);
+
   // Issue #23: after ~10 s of continuously unrecognized Screen the fallback Enter flips
   // the stub to ready, and the Task completes instead of timing out; the dump is still
   // written exactly once and the fallback stops at the recognized ready screen.

@@ -121,6 +121,19 @@ const pickerScreen = () => {
 
 const continueScreen = () => CLEAR + crlf(fixture('continue.ansi'));
 
+// Degraded dialog frame (issue #31): the strong Session-in-use Marker present, the weak
+// 'Take over' Marker removed, so recognition reads the dialog at level degraded and the
+// settle loop must dump the frame even though the dialog branch never falls through to
+// the ordinary dump site.
+const driftDialogScreen = () =>
+  CLEAR +
+  crlf(
+    fixture('../0.0.198/session-in-use.ansi')
+      .split('\n')
+      .filter((line) => !line.includes('Take over'))
+      .join('\n'),
+  );
+
 // Issue #21: a frame matching no known class (no picker, ready, Continue, session-in-use,
 // login or connecting marker), with a ticking Countdown line so the driver's Freeze-key
 // dedupe is exercised: repaints collapse to one dump file that still keeps the Countdown.
@@ -344,6 +357,12 @@ process.stdin.on('data', (chunk) => {
 await sleep(80);
 out(CONNECTING + ' to agent...\r\n');
 await sleep(80);
+if (mode === 'drift-dialog') {
+  // Static degraded dialog: every settle frame has one Freeze key, so the dump
+  // collapses to a single file; Enters never clear it, so the Task times out.
+  out(driftDialogScreen());
+  for (;;) await sleep(1_000);
+}
 if (mode === 'unknown') {
   // No intermediate banner frame: the first stable screen is already the unknown one,
   // so a boot produces exactly one dump signature. Repaints tick the Countdown until

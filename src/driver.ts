@@ -332,6 +332,14 @@ export class FreebuffDriver {
         this.loginRequired = true;
         throw new FreebuffDriverError('needs_login');
       }
+      const recognition = recognizeScreen(text);
+      // Issue #31: degraded frames are dumped like unknown ones — dialog frames too,
+      // the Freeze-key dedupe bounds its repaints — into the same per-version folder,
+      // so normal use collects the specimens the corpus needs. The dump is the drift
+      // record `status` reads.
+      if (recognition.screen === null || recognition.level === 'degraded') {
+        writeScreenDump(this.options.configDir, text);
+      }
       if (mentionsSingleInstance(text)) {
         // The Session-in-use dialog clears on ENTER, and any dialog frame is a
         // recognized screen: seeing it stops any running unknown-screen fallback.
@@ -341,13 +349,6 @@ export class FreebuffDriver {
         continue;
       }
       const verdict = classifyScreen(text, dir);
-      const recognition = recognizeScreen(text);
-      // Issue #31: degraded frames are dumped like unknown ones, into the same
-      // per-version folder and deduplicated by Freeze key, so normal use collects
-      // the specimens the corpus needs. The dump is the drift record `status` reads.
-      if (recognition.screen === null || recognition.level === 'degraded') {
-        writeScreenDump(this.options.configDir, text);
-      }
       if (recognition.screen === null) {
         // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
         // and let the loop re-evaluate; any recognized screen restarts the wait.
