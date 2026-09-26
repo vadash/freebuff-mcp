@@ -7,13 +7,16 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'n
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn, type IPty } from 'node-pty';
 import { SCREEN_COLS, SCREEN_ROWS } from '../../src/config.ts';
 import { sleep } from '../../src/util.ts';
-import { CHATS_DIRNAME, CONNECTING, LOG_FILENAME, LOGIN_REQUIRED, PROJECTS_DIRNAME, READY_PROMPT, TURN_END_MSG, mentionsSingleInstance } from '../../src/protocol/markers.ts';
+import { CHATS_DIRNAME, LOG_FILENAME, METADATA_FILENAME, PROJECTS_DIRNAME } from '../../src/protocol/markers.ts';
 import { projectKey, type ChatDirSnapshot } from '../../src/protocol/chatStore.ts';
-import { classifyScreen, CliTerminalScreen } from '../../src/protocol/screen.ts';
-import { defaultDriverOptions } from '../../src/driver.ts';
+import { CliTerminalScreen, type ScreenVerdict } from '../../src/protocol/screen.ts';
+import { recognizeScreen } from '../../src/protocol/signatures.ts';
+import { metadataVersion } from '../../src/protocol/screenDump.ts';
+import { defaultDriverOptions, pickModelIndex } from '../../src/driver.ts';
 
 // Real TUIs repaint in bursts (spinner, status line); require the wanted screen to hold
 // still briefly so fixtures capture the settled frame.
@@ -29,20 +32,33 @@ export const CLEAR_HOME = '\x1b[2J\x1b[H';
 /** Collapses blank runs and trailing padding so a screen can be quoted in errors and notes. */
 export const flatDump = (text: string): string => text.replace(/\n{2,}/g, '\n').replace(/[ \t]+$/gm, '').trim();
 
-// Screens the capture flows already understand. Anything else that holds still on the
-// emulator gets dumped for later analysis instead of being silently lost.
-const knownScreen = (text: string): boolean =>
-  classifyScreen(text).picker !== null ||
-  text.includes(READY_PROMPT) ||
-  text.includes(CONNECTING) ||
-  text.includes(LOGIN_REQUIRED) ||
-  mentionsSingleInstance(text) ||
-  text.includes('Press Enter to continue') ||
-  text.includes('Session ended') ||
-  text.includes(TURN_END_MSG) ||
-  text.includes('Refer friends') ||
-  /\d+(?:m|h) left|\d+:\d\d left/.test(text) ||
-  text.trim() === '';
+// Issue #32: captures write into the running CLI version's own corpus folder, named by
+// the installed version in the real profile's metadata file — the same key the Screen
+// dump writer uses. The version is never guessed: an unreadable metadata file refuses
+// to pick a folder, so a capture can never land in (and overwrite) another version's
+// fixtures.
+export const captureFixturesDir = (configDir: string): string => {
+  const version = metadataVersion(configDir);
+  if (version === null || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(`cannot read the installed freebuff version from ${join(configDir, METADATA_FILENAME)}; refusing to pick a corpus folder`);
+  }
+  return fileURLToPath(new URL(`../fixtures/screen/${version}/`, import.meta.url));
+};
+
+// Issue #32: the pick rule's affordability gate over a parsed picker verdict, declared
+// once so the live capture flow and the CI corpus check can never disagree (story 25).
+// Returns why the choice is unsafe, or null when it is affordable; an unparseable
+// balance must have made the rule skip the paid model entirely (story 11 of #25).
+export const unaffordablePickReason = (verdict: ScreenVerdict): string | null => {
+  const chosen = verdict.entries[pickModelIndex(verdict.entries, verdict.freebucksBalance)];
+  if (chosen === undefined) return 'no picker rows parsed';
+  if (verdict.freebucksBalance === null) {
+    return /deepseek/i.test(chosen.name) ? `pick rule chose the paid model "${chosen.name}" with no parseable balance` : null;
+  }
+  return chosen.price > verdict.freebucksBalance
+    ? `pick rule chose "${chosen.name}" at ${chosen.price} Freebucks/hr over a balance of ${verdict.freebucksBalance}`
+    : null;
+};
 
 export class RealCli {
   private readonly pty: IPty;
@@ -86,10 +102,12 @@ export class RealCli {
   }
 
   /**
-   * Watches the emulator for stable frames that match no known screen and dumps each
-   * distinct one into `dir` (`unknown-<hash>.ansi` flattened, `.raw.ansi` raw bytes) so
-   * surprises can be analyzed after a run instead of being lost. Real-PTY latency only;
-   * the timer drives an external process.
+   * Watches the emulator for stable frames the shared signature table does not
+   * recognize and dumps each distinct one into `dir` (`unknown-<hash>.ansi` flattened,
+   * `.raw.ansi` raw bytes) so surprises can be analyzed after a run instead of being
+   * lost. Issue #32: recognition is the shared `recognizeScreen` — the harness keeps no
+   * list of its own, so it can never disagree with the classifier, doctor and the
+   * settle loop. Real-PTY latency only; the timer drives an external process.
    */
   startUnknownWatch(dir: string): void {
     mkdirSync(dir, { recursive: true });
@@ -101,8 +119,9 @@ export class RealCli {
         if (this.exited) return;
         await this.screen.flush();
         const text = this.text();
-        if (knownScreen(text) || text !== last) {
-          stableSince = knownScreen(text) ? null : Date.now();
+        const known = recognizeScreen(text).screen !== null;
+        if (known || text !== last) {
+          stableSince = known ? null : Date.now();
           last = text;
           return;
         }

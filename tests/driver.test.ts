@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { FreebuffDriver } from '../src/driver.ts';
-import { CONTINUE_PROMPT, COUNTDOWN_REGEX } from '../src/protocol/markers.ts';
+import { CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
 import { readStubInputs, type StubInput } from './helpers/harness.ts';
 import { sleep } from '../src/util.ts';
@@ -68,13 +68,16 @@ describe('FreebuffDriver', () => {
   it('idles at the replayed picker without pressing enter and probes the balance', async () => {
     const { driver, dir } = harness('happy', undefined, { keepAlive: true });
     expect(await driver.awaitIdle(dir)).toBe('picker');
-    expect(driver.screenText()).toContain('25/25 Freebucks daily');
+    // The stub replays the captured picker verbatim, balance numbers from the fixture
+    // (issue #32 expands it), so the assertions hold the invariants that travel with
+    // any refresh: rows with prices, a parseable balance, and the probe echoing it.
+    expect(driver.screenText()).toMatch(FREEBUCKS_BALANCE_REGEX);
     const verdict = classifyScreen(driver.screenText());
-    expect(verdict.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }]);
-    expect(verdict.freebucksBalance).toBe(25);
+    expect(verdict.entries.length).toBeGreaterThan(0);
+    expect(verdict.freebucksBalance).not.toBeNull();
     const probe = driver.probe();
-    expect(probe.freebucksDaily).toBe(25);
-    expect(probe.freebucksBalance).toBe(25);
+    expect(probe.freebucksDaily).toBe(verdict.freebucksDaily);
+    expect(probe.freebucksBalance).toBe(verdict.freebucksBalance);
     expect(probe.hourSessionMinutesLeft).toBeNull();
     await driver.stop();
   }, 30_000);

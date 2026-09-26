@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -15,15 +15,13 @@ import {
 } from '../src/protocol/chatStore.ts';
 import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, PROJECTS_DIRNAME, READY_PROMPT, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
-import { flatDump, RealCli, realChatsRoot, snapshotChats } from './helpers/capture.ts';
+import { recognizeScreen } from '../src/protocol/signatures.ts';
+import { captureFixturesDir, flatDump, RealCli, realChatsRoot, snapshotChats, unaffordablePickReason } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
 
 const gateOpen = process.env.FREEBUFF_REAL_SMOKE === '1';
 const captureRequested = process.env.FREEBUFF_CAPTURE === '1';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-// Captures write into the corpus folder of the version being captured (0.0.199, see the
-// fixtures README); issue #32 makes this the running CLI's own version folder.
-const screenFixturesDir = fileURLToPath(new URL('./fixtures/screen/0.0.199/', import.meta.url));
 const captureCwd = join(repoRoot, '.probe', 'capture');
 const captureRawDir = join(captureCwd, 'raw');
 // Session expiry costs a real hour of wall clock; the expiring countdown shows earlier.
@@ -188,6 +186,9 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       }
     };
 
+    // Issue #32: captures write into the running CLI version's own corpus folder,
+    // resolved from the real profile's metadata — never a hardcoded version.
+    const screenFixturesDir = captureFixturesDir(configDir);
     try {
       // A killed Instance's Hour session persists, so the CLI either lands on the picker
       // (no Hour session) or straight in the resumed ready box (Hour session still ticking).
@@ -200,11 +201,28 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       const resumed = classifyScreen(cli.text()).picker === null;
 
       if (!resumed) {
+        // Issue #32: the picker is born collapsed on 0.0.199+; `v` expands it (harmless
+        // when already expanded). The fixture must hold the full model list, so the pick
+        // rule's affordability gate gets real rows to test against (story 25).
+        cli.type('v');
+        await cli.waitScreen('expanded model list', (t) => classifyScreen(t).entries.length >= 2, 30_000);
         const picker = cli.text();
         if (!/\d+ Freebucks\/hr/.test(picker) || !/\d+\/\d+ Freebucks daily/.test(picker)) {
           throw new Error(`picker is missing price/balance wording; last screen:\n${flatDump(picker)}`);
         }
         save('picker-expanded');
+
+        // The pick rule against those real rows (issue #32): its choice must be
+        // affordable, and an unparseable balance must have made it skip the paid
+        // model entirely — the same gate tests/corpus.test.ts asserts in CI.
+        const verdict = classifyScreen(cli.text());
+        if (verdict.entries.length < 2) {
+          throw new Error(`expanded picker shows ${verdict.entries.length} row(s); expected the full model list; last screen:\n${flatDump(cli.text())}`);
+        }
+        const unsafe = unaffordablePickReason(verdict);
+        if (unsafe !== null) {
+          throw new Error(`${unsafe}; last screen:\n${flatDump(cli.text())}`);
+        }
 
         // Ready box with the Countdown. Navigate to a zero-cost row before pressing Enter:
         // the cursor rests on the remembered model, which a previous manual session may
@@ -227,14 +245,24 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
         await cli.waitScreen('ready input box', (t) => t.includes(READY_PROMPT), 120_000);
       }
 
-      // Single-instance dialog: only an Instance holding an Hour session owns the lock,
-      // so the second spawn must happen once the session runs, not at the picker.
+      // Concurrent second spawn against the Instance now holding an Hour session
+      // (story 26): the corpus records what this CLI shows — the dialog fixture when it
+      // appears, an explicit no-dialog record when it does not (0.0.199 raised none
+      // within 120 s). The dialog is recognized through the shared signature table, and
+      // the unknown watch dumps anything else a second spawn might show.
       const second = new RealCli(captureCwd);
+      second.startUnknownWatch(join(captureCwd, 'unknown'));
       try {
-        await second.waitScreen('single-instance dialog', (t) => mentionsSingleInstance(t), 120_000);
+        await second.waitScreen('Session-in-use dialog', (t) => recognizeScreen(t).screen === 'Session-in-use dialog', 120_000);
         second.saveFixture(screenFixturesDir, captureRawDir, 'single-instance');
       } catch (error) {
-        console.warn(`[capture] single-instance skipped: ${firstErrorLine(error)}`);
+        mkdirSync(captureRawDir, { recursive: true });
+        const note = join(captureRawDir, 'second-spawn-no-dialog.txt');
+        writeFileSync(
+          note,
+          `${new Date().toISOString()} concurrent second spawn: no Session-in-use dialog within 120s (${firstErrorLine(error)})\nlast screen:\n${flatDump(second.text())}\n`,
+        );
+        console.warn(`[capture] no Session-in-use dialog within 120s; recorded ${note}`);
       } finally {
         second.kill();
       }
@@ -277,6 +305,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
   // runs it on a spent-down day.
   it.skipIf(!captureRequested || process.env.FREEBUFF_LOW_CAPTURE !== '1')('captures the low-Freebucks screen (set FREEBUFF_LOW_CAPTURE=1)', async () => {
     mkdirSync(captureCwd, { recursive: true });
+    const screenFixturesDir = captureFixturesDir(configDir);
     const cli = new RealCli(captureCwd);
     cli.startUnknownWatch(join(captureCwd, 'unknown'));
     const DEEPSEEK_PRICE = 5;

@@ -32,12 +32,36 @@ Real captures come from the gated real smoke against the logged-in CLI, headless
 
 `FREEBUFF_REAL_SMOKE=1 FREEBUFF_CAPTURE=1 npx vitest run tests/real-smoke.test.ts -t "captures the real protocol screens"`
 
-It writes into the captured version's folder (issue #32 generalizes that to the running
-CLI's own folder). Each fixture is the flattened visible screen (trailing row padding
-trimmed) behind a `\x1b[2J\x1b[H` clear+home prefix, so `flattenScreen([fixture])`
+It resolves the running CLI version from the real profile's `freebuff-metadata.json` and
+writes into that version's folder (`captureFixturesDir`; issue #32) — an unreadable
+version refuses to pick a folder, so a capture can never overwrite another version's
+fixtures. Each fixture is the flattened visible screen (trailing row padding trimmed)
+behind a `\x1b[2J\x1b[H` clear+home prefix, so `flattenScreen([fixture])`
 reproduces the screen; tests replay with `\r\n` line endings, as the PTY emits them. Raw
 PTY streams land in `.probe/capture/raw/` (gitignored); review captures for private data
 before committing.
+
+## The capture flows
+
+The gated run (`FREEBUFF_CAPTURE=1`, by hand on a logged-in machine) covers the screens
+normal use reaches, plus two flows that fill known gaps (issue #32):
+
+- **Expanded picker.** The picker is born collapsed on 0.0.199+; the flow presses `v`
+  (harmless when already expanded), waits for the full model list to render, and only
+  then writes `picker-expanded.ansi` — so the fixture holds every row with its price.
+  It then runs the pick rule (`pickModelIndex`) against those real rows and fails loudly
+  if the choice is unaffordable, or if the paid model was picked with no parseable
+  balance (the story-11 safe default). The same gate is asserted in CI over every
+  version's fixture by `tests/corpus.test.ts`.
+- **Concurrent second spawn.** While the first Instance holds an Hour session, a second
+  spawn is started and watched through the shared signature table for 120 s. The
+  Session-in-use dialog fixture (`single-instance.ansi`) is written when the dialog
+  appears; when it does not — as on 0.0.199 — the flow records
+  `.probe/capture/raw/second-spawn-no-dialog.txt` (timestamp, reason, last screen) and
+  the unknown watch dumps whatever the second spawn showed instead. A second spawn at
+  the picker (no Hour session) shows no dialog and is not this flow.
+
+The opt-in `FREEBUFF_LOW_CAPTURE=1` variant (below) reaches the exhausted-balance state.
 
 ## 0.0.193
 
@@ -101,8 +125,10 @@ of a mid-session Instance:
 Born COLLAPSED (verified on 0.0.199): a single `GLM 5.3 Flash` box
 (`Deep reasoning · Reasoning: max · Images · NEW`) priced `0 Freebucks/hr`, cursor `›` on
 it (the remembered model), `↓  See all 5 models` below. `classifyScreen` still reads the
-title-plus-rows as `expanded` — the recognition is heuristic, not a layout claim. No real
-expanded 0.0.199 capture exists; the capture flow does not expand the picker.
+title-plus-rows as `expanded` — the recognition is heuristic, not a layout claim. This
+collapsed frame is the last capture taken before the expanded-picker flow existed; the
+next 0.0.199 capture run replaces it with the truly expanded full model list (see "The
+capture flows" above).
 
 Exact strings the protocol depends on:
 
@@ -207,9 +233,10 @@ capture run. `~/.freebuff` holds per-project state for older builds.
 ## unknown screens
 
 While a capture flow runs, a watchdog classifies the emulated screen every couple of
-seconds; any stable frame matching no known pattern (picker, ready box, countdown,
-continue screen, Session-in-use dialog, login gate, ad panel, turn end, transition blanks)
-is dumped to `.probe/capture/unknown/unknown-<hash>.ansi` (flattened, replayable) plus
+seconds through the shared signature table (`recognizeScreen` — issue #32 removed the
+harness's own looser list, so it can never disagree with the classifier, doctor and the
+settle loop); any stable frame matching no known screen is dumped to
+`.probe/capture/unknown/unknown-<hash>.ansi` (flattened, replayable) plus
 `.raw.ansi` (the full raw byte stream up to that point). Review the dumps after a run —
 anything interesting becomes a named fixture or a new marker; the directory is gitignored
 scratch.

@@ -6,8 +6,10 @@
 // hand-made emulator vectors (fixtures README).
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { classifyScreen } from '../src/protocol/screen.ts';
 import { recognizeScreen, type KnownScreen } from '../src/protocol/signatures.ts';
 import { flattenScreen } from '../src/protocol/screen.ts';
+import { unaffordablePickReason } from './helpers/capture.ts';
 
 const corpusDir = new URL('./fixtures/screen/', import.meta.url);
 // Fixtures store the flattened screen with \n; the real PTY (ConPTY) emits \r\n, and LF
@@ -144,6 +146,20 @@ describe('screen fixture corpus (issue #27)', () => {
     it('the login gate without its Marker is not recognized', async () => {
       const recognition = recognizeScreen(await withoutLinesContaining('synthetic', 'login-required', 'Not authenticated'));
       expect(recognition.screen).toBeNull();
+    });
+  });
+
+  // Issue #32: the pick rule's affordability gate, exercised against the real captured
+  // rows of every version on file — the reason the corpus holds a picker capture
+  // (story 25). Parsed balance missing means the rule must have skipped the paid model
+  // entirely, since affordability cannot be proven (story 11 of #25).
+  describe('pick rule over the captured rows (issue #32)', () => {
+    const withPicker = (): string[] => folders().filter((folder) => fixtureNames(folder).includes('picker-expanded'));
+
+    it.each(withPicker())('%s: the pick rule never picks a model the balance cannot afford', async (version) => {
+      const verdict = classifyScreen(await load(version, 'picker-expanded'));
+      expect(verdict.entries.length, `${version}/picker-expanded.ansi parses no picker rows`).toBeGreaterThan(0);
+      expect(unaffordablePickReason(verdict), `${version}/picker-expanded.ansi`).toBeNull();
     });
   });
 });

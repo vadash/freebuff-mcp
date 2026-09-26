@@ -50,15 +50,22 @@ describe('classifyScreen', () => {
 });
 
 describe('classifyScreen against the real captured fixtures (issue #11)', () => {
-  it('extracts the real picker entry with its displayed price', async () => {
+  // The picker fixture is refreshed by every capture run of its version (issue #32
+  // expands it), so these hold the parse invariants that travel with any refresh —
+  // never the incidental rows or balance of the last capture.
+  it('parses the real picker rows with their displayed prices', async () => {
     const parsed = classifyScreen(await screen('0.0.199/picker-expanded.ansi'));
-    expect(parsed.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }]);
+    expect(parsed.entries.length).toBeGreaterThan(0);
+    for (const entry of parsed.entries) {
+      expect(entry.name.trim(), JSON.stringify(entry)).not.toBe('');
+      expect(entry.price).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it('extracts the Freebucks balance and daily allowance from the real picker', async () => {
     const parsed = classifyScreen(await screen('0.0.199/picker-expanded.ansi'));
-    expect(parsed.freebucksBalance).toBe(25);
-    expect(parsed.freebucksDaily).toBe(25);
+    expect(parsed.freebucksBalance).not.toBeNull();
+    expect(parsed.freebucksDaily).toBeGreaterThanOrEqual(parsed.freebucksBalance!);
     expect(parsed.countdownMinutes).toBeNull();
     expect(parsed.continueScreen).toBe(false);
   });
