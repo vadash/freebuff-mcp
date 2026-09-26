@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
+import { COUNTDOWN_REGEX, KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { pickModelIndex } from '../src/driver.ts';
 import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeKey, screenExcerpt } from '../src/protocol/screen.ts';
 
@@ -219,6 +219,17 @@ describe('freezeKey', () => {
     const ticked = ready.replace('58m left', '57m left');
     expect(ticked).not.toBe(ready);
     expect(freezeKey(ticked)).toBe(freezeKey(ready));
+  });
+
+  // Issue #31: drifted Countdown wording misses COUNTDOWN_REGEX, yet its ticking
+  // minutes must never enter the key — degraded repaints would multiply dumps.
+  it('ignores a drifted Countdown whose wording misses the Countdown regex', async () => {
+    const ready = await screen('0.0.199/ready.ansi');
+    const drifted = ready.replace('58m left', '58m remaining');
+    expect(COUNTDOWN_REGEX.test(drifted)).toBe(false);
+    const ticked = drifted.replace('58m remaining', '57m remaining');
+    expect(freezeKey(ticked)).toBe(freezeKey(drifted));
+    expect(freezeKey(drifted)).toBe(freezeKey(ready));
   });
 
   it('ignores the Freebucks lines on the picker and the Continue screen', async () => {

@@ -376,8 +376,13 @@ if (mode === 'unknown') {
     if (unknownStuck) out(unknownScreen());
   }
 } else {
-  out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
-  await sleep(80);
+  // The degraded ready screen is the drift mode's first stable frame: an intermediate
+  // banner-only frame matches no signature, and a settle poll catching it under load
+  // would dump a second file (issue #31; same rule as the unknown mode above).
+  if (mode !== 'drift') {
+    out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
+    await sleep(80);
+  }
   if (mode === 'needs-login') {
     out(LOGIN_REQUIRED + '\r\n');
     for (;;) await sleep(1_000);
