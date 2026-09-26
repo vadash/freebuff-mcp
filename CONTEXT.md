@@ -61,6 +61,15 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 - **Model picker**: the screen titled "Start coding for free" that lists models
   and prices. Picking one starts an Hour session. The Instance idles here when
   no Hour session is running.
+- **Pick rule**: how the Driver picks at the Model picker, in order: the first
+  deepseek row the Freebucks balance can afford, else the first glm row, else
+  the first mimo row, else the highlighted row. Down-arrows only, then Enter;
+  re-applied on every Task that finds the picker. Code: `pickModelIndex`.
+  _Avoid:_ "model strategy", "preferred model".
+- **Active model**: the model an Hour session runs with, shown before the first
+  `·` on the ready status line. Re-derived from the Screen on every read,
+  never stored; null whenever no Hour session is running.
+  _Avoid:_ "selected model", "current model".
 - **Continue screen**: shown after an Hour session expires ("press Enter to
   continue"). Enter starts the next Hour session. The Supervisor presses it
   only when a task arrives.
