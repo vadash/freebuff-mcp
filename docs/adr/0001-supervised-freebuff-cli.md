@@ -123,7 +123,8 @@ relied on that setting. The rule is hardcoded for v1 and easy to reverse.
 
 ### 8. Accepted divergences from spec #1
 
-- A sixth MCP tool, `doctor`.
+- Two extra MCP tools: `doctor`, and `screen` (issue #21), which returns the
+  raw Screen text the Driver reads, blank rows included.
 - A `shutdown` pipe op (used by tests and for clean teardown).
 - Node.js 22.6+: sources run via `--experimental-strip-types`, no build step.
 - `cancel_task` kills the Instance instead of confirming it went idle.

@@ -43,7 +43,8 @@ Exact strings the protocol depends on:
   days, 40 others; an exhausted day shows `0/25` or `0/40`.
 - Streak-perk line: `🎁 Streak perk: +15 Freebucks every Pacific day`
 - Hint row: `H · History` above the bottom border (added by the 0.0.198 update;
-  `doctor` expects it on the Model picker and under the Session-in-use dialog)
+  `doctor` expects it on the Model picker; it also renders under the
+  Session-in-use dialog, where doctor does not check it)
 - `✦ Refer friends → earn Freebucks:` / `⎘ Copy invite link  Open Earn ↵`
 
 The 0.0.193 picker (previous capture, git history) was born expanded with four
@@ -169,7 +170,7 @@ the 0.0.199 capture run. `~/.freebuff` holds per-project state for older builds.
 
 While a capture flow runs, a watchdog classifies the emulated screen every couple of
 seconds; any stable frame matching no known pattern (picker, ready box, countdown,
-continue screen, single-instance dialog, login gate, ad panel, turn end, transition
+continue screen, Session-in-use dialog, login gate, ad panel, turn end, transition
 blanks) is dumped to `.probe/capture/unknown/unknown-<hash>.ansi` (flattened, replayable)
 plus `.raw.ansi` (the full raw byte stream up to that point). Review the dumps after a run
 — anything interesting becomes a named fixture or a new marker; the directory is

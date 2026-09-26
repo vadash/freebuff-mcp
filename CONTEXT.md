@@ -33,11 +33,14 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 - **MCP server**: the stdio proxy the harness launches. Holds no state.
 - **Driver**: the code that runs the Instance in a pseudo-terminal, types into
   it, and reads the Screen and Chat store.
-- **Instance**: one running freebuff process. At most one Instance holds the
-  Hour session; a second spawn is refused with the Session-in-use dialog, and
-  `Take over` is the recovery path. The CLI writes no pid record to disk —
-  the Supervisor reads the pid from its own PTY. Killing it is cheap because
-  the Hour session resumes on relaunch. _Avoid:_ "session" (for the process).
+- **Instance**: one running freebuff process. The Supervisor runs at most one
+  at a time. The CLI writes no pid record to disk — the Supervisor reads the
+  pid from its own PTY. Killing it is cheap because the Hour session resumes
+  on relaunch. _Avoid:_ "session" (for the process).
+- **Session-in-use dialog**: freebuff's claim check at startup, shown when the
+  Hour session is still claimed elsewhere (seen after an Instance was killed
+  mid-session). `Take over` is the recovery path. Older CLIs worded it
+  "Freebuff is already running". _Avoid:_ "single-instance dialog".
 
 ### Freebuff's economy
 
@@ -89,24 +92,38 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 - **Screen**: the rendered terminal, flattened to text. Used for state only,
   never for the Answer.
 - **Chat store**: freebuff's on-disk chat logs (`log.jsonl` per chat dir).
-- **Markers**: the literal screen and chat strings the protocol depends on,
-  kept in `src/protocol/markers.ts` and backed by fixtures.
-- **Watchdog**: fails a Task on freeze (Screen, minus Countdown and Freebucks
-  lines, and Chat store unchanged for 3 minutes), crash, or its 20-minute
-  deadline, then respawns the Instance. Never resubmits the prompt.
-- **Doctor**: the `doctor` tool; checks the Markers against the live Screen.
+- **Marker**: one screen or chat pattern the protocol depends on, backed by
+  fixtures. A screen Marker is strong (specific to its screen) or weak
+  (generic, e.g. `Esc`). _Avoid:_ "cue".
+- **Screen signature**: how a known screen is recognized: its Markers, how
+  many must match (at least one strong), and the region of the Screen they
+  are searched in. When two signatures match, a fixed priority decides.
+  _Avoid:_ "screen rule".
+- **Freeze key**: the Screen minus its Countdown and Freebucks lines; what the
+  Watchdog compares for freezes and what names a Screen dump. _Avoid:_
+  "freeze signature".
+- **Watchdog**: fails a Task on freeze (Freeze key and Chat store unchanged
+  for 3 minutes), crash, or its 20-minute deadline, then respawns the
+  Instance. Never resubmits the prompt.
+- **Doctor**: checks the showing screen against its Screen signature: pass
+  (every Marker), degraded (Drift: threshold met, some Marker missing) or
+  fail. Not run while the Instance starts.
 - **Error log**: Screen lines matching the known error Markers seen during a
   Turn, appended with a timestamp and the Bound directory, once per Turn. Never
   acted on.
-- **Screen dump**: an unrecognized Screen saved as
+- **Screen dump**: an unrecognized or degraded Screen saved as
   `<configDir>/screen-dumps/<version>/<hash>.ansi` while the settle loop waits.
-  The hash is the freeze signature, so Countdown repaints dedupe to one file.
-  Write-only diagnostics; drift shows up as data, not as failed Tasks.
-- **Fallback pick**: after ~10 s of continuously unrecognized Screen the
-  Driver presses Enter (the 3 s enter throttle is the floor, not the cadence)
-  and re-evaluates; any recognized screen stops it. Accepted cost: Enter at a
-  Model picker starts an Hour session on the highlighted/last-session model.
-  Session-in-use takeover stays unconditional.
+  The hash is of the Freeze key, so Countdown repaints dedupe to one file.
+  Write-only diagnostics; drift shows up as data, not as failed Tasks. Fixing
+  Drift mostly means promoting a dump into the fixture corpus.
+- **Drift**: a CLI update changing a known screen so that some of its Markers
+  no longer match. Detected, not prevented; a recapture follows a drift
+  signal, never a version bump alone.
+- **Fallback Enter**: while the Instance starts, a Screen that stays
+  unrecognized for ~10 s gets one Enter, then another every ~10 s until a
+  recognized screen shows. Accepted cost: if the unrecognized screen is a
+  drifted Model picker, Enter starts an Hour session on the highlighted model.
+  _Avoid:_ "fallback pick".
 
 _Avoid:_ "park", "parked", "parking". The Instance idles; it is never parked,
 and `/end-session` is never sent.
