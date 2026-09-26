@@ -1,18 +1,18 @@
 // PTY driver adapted from Praket7/freebuff-mcp (MIT).
 /// <reference lib="es2024" />
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS, UNKNOWN_SCREEN_FALLBACK_MS } from './config.ts';
+import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS, UNKNOWN_SCREEN_FALLBACK_MS, UNSOLICITED_ENTER_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, SCREEN_DUMPS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, freezeSignature, isKnownScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
+import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
+import { CliTerminalScreen, classifyScreen, isKnownScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
+import { metadataVersion, writeScreenDump } from './protocol/screenDump.ts';
 import { sleep } from './util.ts';
 
 export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login' | 'no_answer';
@@ -135,39 +135,8 @@ export class FreebuffDriver {
       freebucksBalance: verdict.freebucksBalance,
       freebucksDaily: verdict.freebucksDaily,
       runningVersion: VERSION_BANNER_REGEX.exec(text)?.[1] ?? null,
-      onDiskVersion: this.metadataVersion(),
+      onDiskVersion: metadataVersion(this.options.configDir),
     };
-  }
-
-  // The installed CLI version from the metadata file, shared by the updatePending
-  // probe and the screen-dump folder name; null when unreadable.
-  private metadataVersion(): string | null {
-    try {
-      const meta = JSON.parse(readFileSync(join(this.options.configDir, METADATA_FILENAME), 'utf8')) as { version?: unknown };
-      return typeof meta.version === 'string' ? meta.version : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // Issue #21: an unknown Screen frame is dumped once per freeze signature under the
-  // config directory, in a folder per installed CLI version. Countdown repaints dedupe
-  // to one file because the signature strips the Countdown lines; the file keeps them.
-  // Write-only diagnostics: nothing reads dumps back, and a failed dump never fails
-  // the settle loop.
-  private dumpUnknownScreen(text: string): void {
-    try {
-      const version = this.metadataVersion() ?? 'unknown';
-      const hash = createHash('sha256').update(freezeSignature(text)).digest('hex');
-      const dir = join(this.options.configDir, SCREEN_DUMPS_DIRNAME, version);
-      const path = join(dir, `${hash}.ansi`);
-      if (!existsSync(path)) {
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(path, text);
-      }
-    } catch {
-      // Diagnostics only.
-    }
   }
 
   newestLogSize(dir: string): number {
@@ -344,13 +313,13 @@ export class FreebuffDriver {
     let continuePressed = false;
     // Issue #23: start of the current stretch of continuously unrecognized Screen.
     let unknownSince: number | null = null;
-    // One throttle for every unsolicited Enter: the single-instance dialog's
-    // re-entries, the picker pick, and the issue #23 unknown-screen fallback.
-    const pressEnterThrottled = (): boolean => {
+    // One throttle for every unsolicited Enter: the picker pick, the Session-in-use
+    // dialog's re-entries, and the Fallback Enter.
+    const unsolicitedEnter = async (press: () => void | Promise<void>): Promise<boolean> => {
       const now = Date.now();
-      if (now - lastEnterAt <= PICKER_REENTER_MS) return false;
-      pty.write('\r');
-      lastEnterAt = now;
+      if (now - lastEnterAt <= UNSOLICITED_ENTER_MS) return false;
+      await press();
+      lastEnterAt = Date.now();
       return true;
     };
     while (Date.now() < deadline) {
@@ -361,21 +330,21 @@ export class FreebuffDriver {
         throw new FreebuffDriverError('needs_login');
       }
       if (mentionsSingleInstance(text)) {
-        // The single-instance dialog clears on ENTER, and any dialog frame is a
+        // The Session-in-use dialog clears on ENTER, and any dialog frame is a
         // recognized screen: seeing it stops any running unknown-screen fallback.
         unknownSince = null;
-        pressEnterThrottled();
+        await unsolicitedEnter(() => pty.write('\r'));
         await sleep(POLL_MS);
         continue;
       }
       const verdict = classifyScreen(text, dir);
       if (!isKnownScreen(verdict, text)) {
-        this.dumpUnknownScreen(text);
+        writeScreenDump(this.options.configDir, text);
         // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
         // and let the loop re-evaluate; any recognized screen restarts the wait.
         const now = Date.now();
         if (unknownSince === null) unknownSince = now;
-        if (now - unknownSince >= UNKNOWN_SCREEN_FALLBACK_MS && pressEnterThrottled()) unknownSince = now;
+        if (now - unknownSince >= UNKNOWN_SCREEN_FALLBACK_MS && (await unsolicitedEnter(() => pty.write('\r')))) unknownSince = now;
       } else if (text.trim() !== '') {
         // A blank frame is a paint transition (ConPTY emits transient blanks between
         // repaints), not a recognized screen: it neither starts nor resets the wait.
@@ -398,11 +367,9 @@ export class FreebuffDriver {
         pty.write('\r');
         await sleep(POLL_MS);
       } else if (verdict.picker !== null) {
-        // ADR-0001 #6: pick the model by rule instead of taking the top row.
-        if (Date.now() - lastEnterAt > PICKER_REENTER_MS) {
-          await this.pickModel(pty, verdict);
-          lastEnterAt = Date.now();
-        }
+        // ADR-0001 #6: pick the model by rule instead of taking the top row; the pick's
+        // closing Enter shares the unsolicited-Enter throttle.
+        await unsolicitedEnter(() => this.pickModel(pty, verdict));
       }
       await sleep(POLL_MS);
     }

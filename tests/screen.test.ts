@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeSignature, screenExcerpt } from '../src/protocol/screen.ts';
+import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeKey, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
 const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');
@@ -151,24 +151,24 @@ describe('flattenScreen', () => {
   });
 });
 
-describe('freezeSignature', () => {
+describe('freezeKey', () => {
   it('ignores the ticking Countdown on the ready status line', async () => {
     const ready = await screen('ready.ansi');
     const ticked = ready.replace('58m left', '57m left');
     expect(ticked).not.toBe(ready);
-    expect(freezeSignature(ticked)).toBe(freezeSignature(ready));
+    expect(freezeKey(ticked)).toBe(freezeKey(ready));
   });
 
   it('ignores the Freebucks lines on the picker and the Continue screen', async () => {
     const picker = await screen('picker-expanded.ansi');
-    expect(freezeSignature(picker.replace(/\d+\/(\d+) Freebucks daily/, '3/$1 Freebucks daily'))).toBe(freezeSignature(picker));
+    expect(freezeKey(picker.replace(/\d+\/(\d+) Freebucks daily/, '3/$1 Freebucks daily'))).toBe(freezeKey(picker));
     const cont = await screen('continue.ansi');
-    expect(freezeSignature(cont.replace(/\d+ Freebucks left/, '7 Freebucks left'))).toBe(freezeSignature(cont));
+    expect(freezeKey(cont.replace(/\d+ Freebucks left/, '7 Freebucks left'))).toBe(freezeKey(cont));
   });
 
   it('still sees any other Screen change', async () => {
     const ready = await screen('ready.ansi');
-    expect(freezeSignature(ready + '\nThinking...')).not.toBe(freezeSignature(ready));
+    expect(freezeKey(ready + '\nThinking...')).not.toBe(freezeKey(ready));
   });
 });
 

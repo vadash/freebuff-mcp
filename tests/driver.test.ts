@@ -117,9 +117,9 @@ describe('FreebuffDriver', () => {
     await driver.stop();
   }, 30_000);
 
-  // Issue #21: the settle loop dumps a screen matching no known class once per freeze
-  // signature, in a folder named by the metadata file's version.
-  it('dumps the unknown settle screen once per signature under the metadata version folder', async () => {
+  // Issue #21: the settle loop dumps a screen matching no known class once per Freeze
+  // key, in a folder named by the metadata file's version.
+  it('dumps the unknown settle screen once per Freeze key under the metadata version folder', async () => {
     const { driver, dir, configDir } = harness('unknown', { readyMs: 2_000 });
     writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.199' }));
     await expect(driver.runTask(dir, 'hello')).rejects.toMatchObject({ reason: 'ready_timeout' });
@@ -129,9 +129,9 @@ describe('FreebuffDriver', () => {
     expect(dumps[0]).toMatch(/^[0-9a-f]{64}\.ansi$/);
     const content = readFileSync(join(versionDir, dumps[0]!), 'utf8');
     expect(content).toContain('Quantum flux calibration panel');
-    // The file keeps the Countdown lines the signature strips for comparison.
+    // The file keeps the Countdown lines the Freeze key strips for comparison.
     expect(content).toMatch(COUNTDOWN_REGEX);
-    // Second boot on the same screen: same signature, no new file.
+    // Second boot on the same screen: same Freeze key, no new file.
     const again = new FreebuffDriver({
       executable: process.execPath,
       argsPrefix: [stub],

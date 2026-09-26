@@ -117,7 +117,7 @@ const pickerScreen = () => {
 const continueScreen = () => CLEAR + crlf(fixture('continue.ansi'));
 
 // Issue #21: a frame matching no known class (no picker, ready, Continue, session-in-use,
-// login or connecting marker), with a ticking Countdown line so the driver's freeze-signature
+// login or connecting marker), with a ticking Countdown line so the driver's Freeze-key
 // dedupe is exercised: repaints collapse to one dump file that still keeps the Countdown.
 const UNKNOWN_TITLE = 'Quantum flux calibration panel';
 const unknownScreen = () =>

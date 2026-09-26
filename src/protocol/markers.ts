@@ -38,9 +38,6 @@ export const LOG_FILENAME = 'log.jsonl';
 export const INSTANCE_RECORD_FILENAME = 'freebuff-instance-owner.json';
 export const LOCK_FILENAME = 'freebuff.lock';
 export const METADATA_FILENAME = 'freebuff-metadata.json';
-// Issue #21: unknown settle-loop screens dumped under the config directory,
-// one folder per CLI version, one file per freeze signature. Write-only.
-export const SCREEN_DUMPS_DIRNAME = 'screen-dumps';
 
 // Slash commands typed into the TUI input box.
 export const NEW_COMMAND = '/new';
@@ -65,7 +62,7 @@ export const PRICE_REGEX = /(\d+)\s+Freebucks\/hr/;
 // low state is this left number falling below a model's price (fixture README).
 export const FREEBUCKS_BALANCE_REGEX = /(\d+)\/(\d+)\s+Freebucks daily/;
 // Remaining balance as the 0.0.193 Continue screen rendered it (`Session ended  ·  20 Freebucks left`);
-// the 0.0.199 Continue screen no longer shows any balance. Kept for the freeze signature
+// the 0.0.199 Continue screen no longer shows any balance. Kept for the Freeze key
 // (such a line must never mask a freeze) and older-build tolerance.
 export const FREEBUCKS_LEFT_REGEX = /(\d+)\s+Freebucks left/;
 export const VERSION_BANNER_REGEX = /freebuff\s+v(\S+)/i;

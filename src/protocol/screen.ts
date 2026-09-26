@@ -128,7 +128,7 @@ export const isKnownScreen = (verdict: ScreenVerdict, text: string): boolean =>
 
 /** The Screen as the Watchdog compares it: Countdown and Freebucks lines dropped, so a
  *  ticking timer never masks a freeze. */
-export const freezeSignature = (text: string): string =>
+export const freezeKey = (text: string): string =>
   text
     .split('\n')
     .filter((line) => !COUNTDOWN_REGEX.test(line) && !FREEBUCKS_BALANCE_REGEX.test(line) && !FREEBUCKS_LEFT_REGEX.test(line))

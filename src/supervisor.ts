@@ -6,7 +6,7 @@ import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { checkMarkers } from './doctor.ts';
-import { classifyScreen, errorLines, freezeSignature, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
+import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -388,7 +388,7 @@ export class Supervisor {
   private watchFreeze(task: QueuedTask, onFrozen: () => void): { stop: () => void } {
     const dir = this.boundDir!;
     let lastLog = this.driver.newestLogSize(dir);
-    let lastScreen = freezeSignature(this.driver.screenText());
+    let lastScreen = freezeKey(this.driver.screenText());
     let lastChange = Date.now();
     const timer = setInterval(() => {
       if (this.active !== task || task.cancelled) {
@@ -396,7 +396,7 @@ export class Supervisor {
         return;
       }
       const log = this.driver.newestLogSize(dir);
-      const screen = freezeSignature(this.driver.screenText());
+      const screen = freezeKey(this.driver.screenText());
       if (log !== lastLog || screen !== lastScreen) {
         lastLog = log;
         lastScreen = screen;
