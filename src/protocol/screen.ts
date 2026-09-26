@@ -2,7 +2,7 @@
 // exceeds hand-rolled VT support, and raw PTY history is not the visible screen.
 import headless from '@xterm/headless';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
-import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, LOGIN_REQUIRED, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR, mentionsSingleInstance } from './markers.ts';
+import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR } from './markers.ts';
 
 const { Terminal } = headless;
 
@@ -111,20 +111,6 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
     continueScreen: text.includes(SESSION_ENDED) && text.includes(CONTINUE_PROMPT),
   };
 }
-
-/** True when the Screen shows a state the protocol knows: Model picker, ready, Continue
- *  screen, Session-in-use dialog, login gate, or connecting. A blank frame is a
- *  transition blank, also known — dumping every boot's pre-paint rows would be noise.
- *  Anything else is an unknown screen (issue #21) and gets dumped by the Driver's
- *  settle loop. */
-export const isKnownScreen = (verdict: ScreenVerdict, text: string): boolean =>
-  text.trim() === '' ||
-  verdict.ready ||
-  verdict.connecting ||
-  verdict.picker !== null ||
-  verdict.continueScreen ||
-  text.includes(LOGIN_REQUIRED) ||
-  mentionsSingleInstance(text);
 
 /** The Screen as the Watchdog compares it: Countdown and Freebucks lines dropped, so a
  *  ticking timer never masks a freeze. */

@@ -8,7 +8,8 @@ recapture; a version folder simply lacks the screens never captured on it.
   became per-version (issue #27)
 - `0.0.198/` — the Session-in-use dialog, captured on freebuff 0.0.198 after a SIGKILL
 - `0.0.199/` — freebuff 0.0.199 (win32-x64), captured 2026-09-26 by the issue #24 refresh run
-- `negative/` — hand-made frames that must match NO known screen
+- `negative/` — hand-made frames a loosened signature must never recognize (most match
+  NO known screen; two are ready frames that must never read as Continue, issue #28)
 - `synthetic/` — hand-made emulator test vectors, not protocol captures
 
 The stub freebuff (`tests/stub-freebuff.mjs`) replays `0.0.199/picker-expanded.ansi` and
@@ -155,14 +156,21 @@ fails if one starts matching):
   link`): picker furniture, not a known screen.
 - `generic-words.ansi` — `Esc`, `↵ Enter  select`, `H · History` with no strong Marker:
   generic words never recognize a screen by themselves.
+- `continue-wording-answer.ansi` — a ready Screen whose Answer carries the Continue
+  wording (`Session ended`, `Press Enter to continue in a new session`): the wording
+  rides in the transcript, above the Continue signature's bottom-rows region, so the
+  frame stays ready, never Continue (issue #28).
+- `mid-turn-esc.ansi` — a ready Screen mid-Turn (`working · 3s · ■ Esc`, no Countdown
+  line): recognized as the degraded ready it is, never Continue (issue #28).
 
 ## synthetic/
 
 Hand-made emulator test vectors for split writes, repaints and scrollback behavior:
 `banner-ready` (directory banner on ready), `connecting`, `connecting-to-ready`
-(cursor-up rewrite erases Connecting), `login-required`, `partial-line` (a line completed
-across writes), `repaint` (the last repaint wins), `split-escape` (escape sequence split
-mid-sequence).
+(cursor-up rewrite erases Connecting), `dialog-over-picker` (the Session-in-use dialog
+wording and buttons over a full Model picker — the fixed priority must read the dialog,
+issue #28), `login-required`, `partial-line` (a line completed across writes), `repaint`
+(the last repaint wins), `split-escape` (escape sequence split mid-sequence).
 
 ## low-freebucks.ansi — deliberately absent
 

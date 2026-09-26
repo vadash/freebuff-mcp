@@ -21,6 +21,7 @@ Driver      src/driver.ts        keystrokes in; reads Screen and Chat store
    ▼
 Instance    freebuff.exe         one at a time, started in the Bound directory
    ├─► Screen      rendered by @xterm/headless → state only (src/protocol/screen.ts)
+   │                 recognized against the Screen signatures (src/protocol/signatures.ts)
    └─► Chat store  <configDir>/…/log.jsonl → Ack, Turn end, Answer (src/protocol/chatStore.ts)
 ```
 

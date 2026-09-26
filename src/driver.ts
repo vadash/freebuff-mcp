@@ -11,7 +11,8 @@ import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, 
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
 import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, isKnownScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
+import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
+import { recognizeScreen } from './protocol/signatures.ts';
 import { metadataVersion, writeScreenDump } from './protocol/screenDump.ts';
 import { sleep } from './util.ts';
 
@@ -338,16 +339,16 @@ export class FreebuffDriver {
         continue;
       }
       const verdict = classifyScreen(text, dir);
-      if (!isKnownScreen(verdict, text)) {
+      const recognition = recognizeScreen(text);
+      if (recognition.screen === null) {
         writeScreenDump(this.options.configDir, text);
         // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
         // and let the loop re-evaluate; any recognized screen restarts the wait.
         const now = Date.now();
         if (unknownSince === null) unknownSince = now;
         if (now - unknownSince >= UNKNOWN_SCREEN_FALLBACK_MS && (await unsolicitedEnter(() => pty.write('\r')))) unknownSince = now;
-      } else if (text.trim() !== '') {
-        // A blank frame is a paint transition (ConPTY emits transient blanks between
-        // repaints), not a recognized screen: it neither starts nor resets the wait.
+      } else if (recognition.screen !== 'blank') {
+        // The blank-frame paint-transition rule lives inside recognizeScreen.
         unknownSince = null;
       }
       if (verdict.ready) {
