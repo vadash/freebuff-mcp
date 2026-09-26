@@ -136,7 +136,7 @@ export const trimRows = (text: string): string => text.replace(/[ \t]+$/gm, '').
 // The stub stands in for the current CLI: it replays the captured picker fixture
 // verbatim, so the expected tail of its picker Screen is the fixture's own rows.
 export const stubPickerRows = (): string =>
-  readFileSync(new URL('../fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '');
+  readFileSync(new URL('../fixtures/screen/0.0.199/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '');
 
 // Issues #18/#23: what the stub received, from FREEBUFF_STUB_INPUT_LOG — each spawn,
 // each bracketed paste, each submitted line, and each screen-changing Enter.

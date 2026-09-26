@@ -21,7 +21,9 @@ import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type Sup
 const gateOpen = process.env.FREEBUFF_REAL_SMOKE === '1';
 const captureRequested = process.env.FREEBUFF_CAPTURE === '1';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-const screenFixturesDir = fileURLToPath(new URL('./fixtures/screen/', import.meta.url));
+// Captures write into the corpus folder of the version being captured (0.0.199, see the
+// fixtures README); issue #32 makes this the running CLI's own version folder.
+const screenFixturesDir = fileURLToPath(new URL('./fixtures/screen/0.0.199/', import.meta.url));
 const captureCwd = join(repoRoot, '.probe', 'capture');
 const captureRawDir = join(captureCwd, 'raw');
 // Session expiry costs a real hour of wall clock; the expiring countdown shows earlier.

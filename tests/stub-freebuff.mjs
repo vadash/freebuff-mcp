@@ -58,7 +58,7 @@ const logInput = (entry) => {
 
 const bannerLine = `freebuff v${version}`;
 
-const fixture = (name) => readFileSync(new URL(`./fixtures/screen/${name}`, import.meta.url), 'utf8');
+const fixture = (name) => readFileSync(new URL(`./fixtures/screen/0.0.199/${name}`, import.meta.url), 'utf8');
 // Default balance numbers come from the captured fixture, so a capture refresh
 // cannot desync the stub's replayed picker from the harness's expected tail.
 const fixtureBalance = (BALANCE_LINE.exec(fixture('picker-expanded.ansi'))?.[0].match(/\d+\/\d+/) ?? ['20/25'])[0];

@@ -25,37 +25,37 @@ const verdict = (over: Record<string, unknown> = {}): Record<string, unknown> =>
 
 describe('classifyScreen', () => {
   it('reports a ready prompt with the Countdown from the status line', async () => {
-    expect(classifyScreen(await screen('ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
+    expect(classifyScreen(await screen('0.0.199/ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
   });
 
   it('reports the connecting spinner even when the prompt is rendered below', async () => {
-    expect(classifyScreen(await screen('connecting.ansi'))).toEqual(verdict({ connecting: true }));
+    expect(classifyScreen(await screen('synthetic/connecting.ansi'))).toEqual(verdict({ connecting: true }));
   });
 
   it('becomes ready when the cursor-up rewrite erases Connecting', async () => {
-    expect(classifyScreen(await screen('connecting-to-ready.ansi'))).toEqual(verdict({ ready: true }));
+    expect(classifyScreen(await screen('synthetic/connecting-to-ready.ansi'))).toEqual(verdict({ ready: true }));
   });
 
   it('binds a directory banner only for the expected dir', async () => {
-    const text = await screen('banner-ready.ansi');
+    const text = await screen('synthetic/banner-ready.ansi');
     expect(classifyScreen(text, 'C:/work/demo-app')).toEqual(verdict({ ready: true, banner: 'C:/work/demo-app' }));
     expect(classifyScreen(text)).toEqual(verdict({ ready: true }));
     expect(classifyScreen(text, 'C:/elsewhere')).toEqual(verdict({ ready: true }));
   });
 
   it('sees an expanded model picker', async () => {
-    expect(classifyScreen(await screen('picker-expanded.ansi')).picker).toBe('expanded');
+    expect(classifyScreen(await screen('0.0.199/picker-expanded.ansi')).picker).toBe('expanded');
   });
 });
 
 describe('classifyScreen against the real captured fixtures (issue #11)', () => {
   it('extracts the real picker entry with its displayed price', async () => {
-    const parsed = classifyScreen(await screen('picker-expanded.ansi'));
+    const parsed = classifyScreen(await screen('0.0.199/picker-expanded.ansi'));
     expect(parsed.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }]);
   });
 
   it('extracts the Freebucks balance and daily allowance from the real picker', async () => {
-    const parsed = classifyScreen(await screen('picker-expanded.ansi'));
+    const parsed = classifyScreen(await screen('0.0.199/picker-expanded.ansi'));
     expect(parsed.freebucksBalance).toBe(25);
     expect(parsed.freebucksDaily).toBe(25);
     expect(parsed.countdownMinutes).toBeNull();
@@ -63,11 +63,11 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
   });
 
   it('sees no Continue screen on the picker', async () => {
-    expect(classifyScreen(await screen('picker-expanded.ansi')).continueScreen).toBe(false);
+    expect(classifyScreen(await screen('0.0.199/picker-expanded.ansi')).continueScreen).toBe(false);
   });
 
   it('sees the Continue screen; 0.0.199 no longer shows a remaining balance', async () => {
-    const parsed = classifyScreen(await screen('continue.ansi'));
+    const parsed = classifyScreen(await screen('0.0.199/continue.ansi'));
     expect(parsed.continueScreen).toBe(true);
     expect(parsed.ready).toBe(false);
     expect(parsed.picker).toBeNull();
@@ -77,26 +77,26 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
   });
 
   it('matches the captured error screen against the known error strings', async () => {
-    const text = await screen('error.ansi');
+    const text = await screen('0.0.199/error.ansi');
     expect(KNOWN_ERROR_STRINGS.some((marker) => text.includes(marker))).toBe(true);
   });
 
   it('extracts the error lines from the captured error screen, trimmed, one per occurrence', async () => {
-    const text = await screen('error.ansi');
+    const text = await screen('0.0.199/error.ansi');
     const line = 'Command not found: "/definitely-not-a-freebuff-command"';
     expect(errorLines(`${text}\n${text}`)).toEqual([line, line]);
-    expect(errorLines(await screen('ready.ansi'))).toEqual([]);
+    expect(errorLines(await screen('0.0.199/ready.ansi'))).toEqual([]);
   });
 
   it('matches the single-instance dialog marker against the real capture', async () => {
-    expect(classifyScreen(await screen('single-instance.ansi')).ready).toBe(false);
-    expect(mentionsSingleInstance(await load('single-instance.ansi'))).toBe(true);
+    expect(classifyScreen(await screen('0.0.193/single-instance.ansi')).ready).toBe(false);
+    expect(mentionsSingleInstance(await load('0.0.193/single-instance.ansi'))).toBe(true);
   });
 
   it('matches the 0.0.198 session-in-use dialog marker against the real capture', async () => {
-    expect(classifyScreen(await screen('session-in-use.ansi')).ready).toBe(false);
-    expect(classifyScreen(await screen('session-in-use.ansi')).picker).toBeNull();
-    expect(mentionsSingleInstance(await load('session-in-use.ansi'))).toBe(true);
+    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).ready).toBe(false);
+    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).picker).toBeNull();
+    expect(mentionsSingleInstance(await load('0.0.198/session-in-use.ansi'))).toBe(true);
   });
 
   it('parses every Countdown wording captured in the wild', () => {
@@ -114,11 +114,11 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
 
 describe('flattenScreen', () => {
   it('renders chunks through one shared screen', async () => {
-    expect(classifyScreen(await flattenScreen([load('ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
+    expect(classifyScreen(await flattenScreen([load('0.0.199/ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
   });
 
   it('reassembles an escape sequence split mid-sequence', async () => {
-    const raw = load('split-escape.ansi');
+    const raw = load('synthetic/split-escape.ansi');
     const cut = raw.indexOf('\x1b[2J') + '\x1b[2'.length;
     const flat = await flattenScreen([raw.slice(0, cut), raw.slice(cut)]);
     expect(classifyScreen(flat)).toEqual(verdict({ ready: true }));
@@ -126,7 +126,7 @@ describe('flattenScreen', () => {
   });
 
   it('completes a partial line across writes', async () => {
-    const raw = load('partial-line.ansi');
+    const raw = load('synthetic/partial-line.ansi');
     const cut = raw.indexOf('Connecting') + 'Connect'.length;
     const flat = await flattenScreen([raw.slice(0, cut), raw.slice(cut)]);
     expect(flat).toContain('Connecting...');
@@ -134,7 +134,7 @@ describe('flattenScreen', () => {
   });
 
   it('keeps the last repaint', async () => {
-    const flat = await flattenScreen([load('repaint.ansi')]);
+    const flat = await flattenScreen([load('synthetic/repaint.ansi')]);
     expect(flat).not.toContain('Connecting');
     expect(classifyScreen(flat)).toEqual(verdict({ ready: true }));
   });
@@ -153,21 +153,21 @@ describe('flattenScreen', () => {
 
 describe('freezeKey', () => {
   it('ignores the ticking Countdown on the ready status line', async () => {
-    const ready = await screen('ready.ansi');
+    const ready = await screen('0.0.199/ready.ansi');
     const ticked = ready.replace('58m left', '57m left');
     expect(ticked).not.toBe(ready);
     expect(freezeKey(ticked)).toBe(freezeKey(ready));
   });
 
   it('ignores the Freebucks lines on the picker and the Continue screen', async () => {
-    const picker = await screen('picker-expanded.ansi');
+    const picker = await screen('0.0.199/picker-expanded.ansi');
     expect(freezeKey(picker.replace(/\d+\/(\d+) Freebucks daily/, '3/$1 Freebucks daily'))).toBe(freezeKey(picker));
-    const cont = await screen('continue.ansi');
+    const cont = await screen('0.0.199/continue.ansi');
     expect(freezeKey(cont.replace(/\d+ Freebucks left/, '7 Freebucks left'))).toBe(freezeKey(cont));
   });
 
   it('still sees any other Screen change', async () => {
-    const ready = await screen('ready.ansi');
+    const ready = await screen('0.0.199/ready.ansi');
     expect(freezeKey(ready + '\nThinking...')).not.toBe(freezeKey(ready));
   });
 });

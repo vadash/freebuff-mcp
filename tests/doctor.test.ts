@@ -9,7 +9,7 @@ const screen = async (name: string): Promise<string> =>
   flattenScreen([readFileSync(new URL(`./fixtures/screen/${name}`, import.meta.url), 'utf8').replace(/\n/g, '\r\n')]);
 
 describe('checkMarkers', () => {
-  it.each(['picker-expanded.ansi', 'ready.ansi', 'continue.ansi', 'session-in-use.ansi'])('finds every expected Marker on %s', async (name) => {
+  it.each(['0.0.199/picker-expanded.ansi', '0.0.199/ready.ansi', '0.0.199/continue.ansi', '0.0.198/session-in-use.ansi'])('finds every expected Marker on %s', async (name) => {
     expect(checkMarkers(await screen(name))).toEqual([]);
   });
 
@@ -31,7 +31,7 @@ describe('checkMarkers', () => {
   });
 
   it('finds every expected Marker on the captured 0.0.198 session-in-use fixture', async () => {
-    expect(checkMarkers(await screen('session-in-use.ansi'))).toEqual([]);
+    expect(checkMarkers(await screen('0.0.198/session-in-use.ansi'))).toEqual([]);
   });
 
   it('recognizes the login gate', () => {
@@ -43,12 +43,12 @@ describe('checkMarkers', () => {
   });
 
   it('names the drifted Marker when the picker title wording changes', async () => {
-    const text = (await screen('picker-expanded.ansi')).replace('Start coding for free', 'Pick a model');
+    const text = (await screen('0.0.199/picker-expanded.ansi')).replace('Start coding for free', 'Pick a model');
     expect(checkMarkers(text)).toEqual([expect.stringMatching(/^PICKER_TITLE: /)]);
   });
 
   it('names the drifted Countdown on a ready Screen', async () => {
-    const text = (await screen('ready.ansi')).replace(/ left/g, ' remaining');
+    const text = (await screen('0.0.199/ready.ansi')).replace(/ left/g, ' remaining');
     expect(checkMarkers(text)).toEqual([expect.stringMatching(/^COUNTDOWN_REGEX: /)]);
   });
 
