@@ -70,8 +70,10 @@ const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? fixt
 // driver needs \r\n, exactly like the real TUI's output.
 const crlf = (text) => text.replace(/\n/g, '\r\n');
 
-// Real Countdown wording: `7h 12m left`, `1h left`, `59m left`. Mode `drift` renders
-// altered wording (`remaining`) so `doctor` has a drifted Marker to name.
+// Real Countdown wording: `7h 12m left`, `1h left`, `59m left`. Mode `drift` is the
+// degraded screen mode (issue #31): the altered wording (`remaining`) misses the
+// COUNTDOWN_REGEX Marker, so the ready screen reads as degraded — `doctor` names the
+// drifted Marker and the Supervisor's settle check records the Drift.
 const LEFT = mode === 'drift' ? 'remaining' : 'left';
 const countdownText = (min) => {
   const total = Math.max(0, Math.floor(min));

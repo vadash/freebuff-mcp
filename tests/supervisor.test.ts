@@ -159,6 +159,59 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(readdirSync(versionDir)).toHaveLength(1);
   }, 60_000);
 
+  // Issue #31: the settle check is recorded for the running CLI version. The stub's
+  // degraded screen mode (`drift` — the ready status line's Countdown wording reads
+  // `remaining`, so COUNTDOWN_REGEX misses) boots straight into a degraded ready
+  // screen; it is dumped like an unknown one, and status raises screenDrift.
+  it('raises screenDrift on a degraded screen and dumps it once per Freeze key', async () => {
+    writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.190' }));
+    boot('drift', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1' } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready' });
+    expect(await requestPipe(pipeName, { op: 'doctor' })).toMatchObject({ ok: true, kind: 'doctor', skipped: false, screen: 'ready', level: 'degraded', missing: ['COUNTDOWN_REGEX'] });
+    expect(await pollStatus(pipeName, { screenDrift: true })).toMatchObject({ state: 'ready' });
+    // The next settle re-sees the same degraded frame; the Freeze-key dedupe in the
+    // running version's dump folder keeps it one file.
+    const run = await requestPipe<Record<string, unknown>>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'drift task' }, 30_000);
+    expect(run).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): drift task' });
+    await pollStatus(pipeName, { state: 'ready' });
+    const versionDir = join(dirs.configDir, 'screen-dumps', '0.0.190');
+    const dumps = readdirSync(versionDir);
+    expect(dumps).toHaveLength(1);
+    expect(readFileSync(join(versionDir, dumps[0]!), 'utf8')).toContain('remaining');
+  }, 60_000);
+
+  // Issue #31: an unknown screen raises screenDrift for its version; after the CLI
+  // updates (a different version runs) the 0.0.190 record stays on disk but the
+  // signal clears, because nothing is on record for the new version.
+  it('raises screenDrift for an unknown screen and clears it when a different version runs', async () => {
+    writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.190' }));
+    boot('unknown', { readyMs: 2_500 });
+    await waitForPipe(pipeName, 10_000);
+    const binding = requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000);
+    // Raised as soon as the settle loop dumps the unknown frame.
+    await pollStatus(pipeName, { screenDrift: true });
+    expect((await binding).ok).toBe(false);
+    await pollStatus(pipeName, { state: 'stopped' });
+    writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.231' }));
+    expect(await pollStatus(pipeName, { screenDrift: false })).toMatchObject({ state: 'stopped' });
+  }, 30_000);
+
+  // Issue #31 (story 18): the corpus covering the running version is the fix, so a
+  // dump on record for it never raises the signal. 0.0.199 has a corpus folder.
+  it('keeps screenDrift clear when the corpus holds a folder for the version with the dump', async () => {
+    writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.199' }));
+    boot('unknown', { readyMs: 2_500 });
+    await waitForPipe(pipeName, 10_000);
+    const binding = requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000);
+    await pollStatus(pipeName, { state: 'stopped' });
+    expect((await binding).ok).toBe(false);
+    // The unknown frame IS on record for 0.0.199, but the corpus covers that version.
+    expect(readdirSync(join(dirs.configDir, 'screen-dumps', '0.0.199'))).toHaveLength(1);
+    expect(await pollStatus(pipeName, { screenDrift: false })).toMatchObject({ state: 'stopped' });
+  }, 30_000);
+
   it('spawns at bind, lands at the picker, and idles at ready after each task without respawning', async () => {
     boot('happy');
     await waitForPipe(pipeName, 10_000);

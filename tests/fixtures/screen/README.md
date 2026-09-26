@@ -189,10 +189,13 @@ disable the unaffordable row instead of refusing a pick.
 ## Promoting a Screen dump into the corpus
 
 Screen dumps land in `<configDir>/screen-dumps/<version>/<freeze-key-hash>.ansi`
-(write-only; degraded and unrecognized frames, deduplicated per Freeze key). Promotion is
-deliberate and reviewed: copy the dump into the running version's folder here, rename it
-to the screen it shows, add its exact strings to this README, and let
-`tests/corpus.test.ts` confirm it is recognized.
+(write-only; degraded and unrecognized frames, deduplicated per Freeze key). While a
+dump is on record for the running version and the corpus lacks that version's folder,
+`status` reports `screenDrift: true` — promoting the dump here is what clears the
+signal (and a version the corpus covers never raises it). Promotion is deliberate and
+reviewed: copy the dump into the running version's folder here, rename it to the screen
+it shows, add its exact strings to this README, and let `tests/corpus.test.ts` confirm
+it is recognized.
 
 ## chat-store location
 

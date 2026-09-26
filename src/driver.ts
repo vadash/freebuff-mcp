@@ -342,8 +342,13 @@ export class FreebuffDriver {
       }
       const verdict = classifyScreen(text, dir);
       const recognition = recognizeScreen(text);
-      if (recognition.screen === null) {
+      // Issue #31: degraded frames are dumped like unknown ones, into the same
+      // per-version folder and deduplicated by Freeze key, so normal use collects
+      // the specimens the corpus needs. The dump is the drift record `status` reads.
+      if (recognition.screen === null || recognition.level === 'degraded') {
         writeScreenDump(this.options.configDir, text);
+      }
+      if (recognition.screen === null) {
         // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
         // and let the loop re-evaluate; any recognized screen restarts the wait.
         const now = Date.now();

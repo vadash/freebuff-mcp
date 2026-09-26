@@ -7,6 +7,8 @@ import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
 import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
+import { corpusVersions } from './protocol/corpus.ts';
+import { hasScreenDump } from './protocol/screenDump.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -42,6 +44,8 @@ export interface StatusPayload {
   hourSessionMinutesLeft: number | null;
   freebucksDaily: number | null;
   needsLogin: boolean;
+  // Issue #31: Drift is visible on status, not just to whoever calls doctor.
+  screenDrift: boolean;
   updatePending: { running: string; onDisk: string } | null;
 }
 
@@ -91,6 +95,8 @@ export class Supervisor {
   private active: QueuedTask | null = null;
   private startingConversation = false;
   private readonly driver: FreebuffDriver;
+  // The options the Driver runs with; `configDir` locates the Screen-dump record.
+  private readonly driverOptions: DriverOptions;
   private readonly taskTimeoutMs: number;
   private readonly freezeMs: number;
   private readonly errorLogPath: string;
@@ -102,10 +108,11 @@ export class Supervisor {
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
     this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MS;
     this.errorLogPath = config.errorLogPath ?? ERROR_LOG_PATH;
-    this.driver = new FreebuffDriver({
+    this.driverOptions = {
       ...(config.driver ?? defaultDriverOptions()),
       keepAlive: true,
-    });
+    };
+    this.driver = new FreebuffDriver(this.driverOptions);
   }
 
   async listen(): Promise<Server> {
@@ -143,6 +150,14 @@ export class Supervisor {
         // Observed on the ready Screen status line; a dead Instance observes nothing.
         const verdict = this.driver.isAlive() ? this.verdict() : null;
         const activeModel = verdict?.activeModel ?? null;
+        // Issue #31: Drift on record for the running CLI version — a Screen dump for
+        // it (the settle loop files unknown and degraded frames there) — while the
+        // fixture corpus does not cover the version yet: promoting a dump into the
+        // corpus is what clears the signal. Keyed by the installed version, the same
+        // folder name the dump writer uses ('unknown' when the metadata file is
+        // unreadable), so an update shipping a different version starts clean. Read
+        // from disk on every status, so an intermittent screen never flickers it.
+        const driftVersion = probe.onDiskVersion ?? 'unknown';
         reply({
           ok: true,
           kind: 'status',
@@ -154,6 +169,7 @@ export class Supervisor {
           hourSessionMinutesLeft: probe.hourSessionMinutesLeft,
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),
+          screenDrift: hasScreenDump(this.driverOptions.configDir, driftVersion) && !corpusVersions().includes(driftVersion),
           updatePending:
             probe.runningVersion !== null &&
             probe.onDiskVersion !== null &&
