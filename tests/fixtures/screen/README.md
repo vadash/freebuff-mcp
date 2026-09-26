@@ -113,9 +113,9 @@ Exact strings the protocol depends on:
   0.0.199 added the wallet suffix). The daily allowance is not hardcoded — 25 some days,
   40 others; an exhausted day shows `0/25` or `0/40`.
 - Streak-perk line: `🎁 Streak perk: +15 Freebucks every Pacific day`
-- Hint row: `H · History` above the bottom border (added by the 0.0.198 update; `doctor`
-  expects it on the Model picker; it also renders under the Session-in-use dialog, where
-  doctor does not check it)
+- Hint row: `H · History` above the bottom border (added by the 0.0.198 update; picker
+  furniture, not a picker Marker — it also renders under the Session-in-use dialog, so
+  it must never recognize the picker)
 - `✦ Refer friends → earn Freebucks:` / `⎘ Copy invite link  Open Earn ↵`
 
 ### ready.ansi
@@ -135,8 +135,8 @@ Screen against the Bound directory must expect the git root, not the spawn cwd.
 
 Boxed banner over the frozen transcript; `Session ended` embedded in the box border;
 `Press Enter to continue in a new session`; `Change model   Esc` button (boxed, right
-side). NO remaining balance is shown anymore, so `FREEBUCKS_LEFT_REGEX` is not a doctor
-table marker. Enter starts a fresh Hour session; Esc reopens the model picker. The
+side). NO remaining balance is shown anymore, so `FREEBUCKS_LEFT_REGEX` is not a
+Continue Marker. Enter starts a fresh Hour session; Esc reopens the model picker. The
 supervisor confirms this screen lazily, only when the next task arrives.
 
 ### error.ansi

@@ -197,9 +197,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     const report = JSON.parse(toolText((await c.callTool({ name: 'doctor', arguments: {} })) as CallResult)) as {
       ok: boolean;
       skipped: boolean;
-      failures: string[];
+      screen: string | null;
+      level: string | null;
+      missing: string[];
     };
-    expect(report).toEqual({ ok: false, skipped: true, failures: [] });
+    expect(report).toEqual({ ok: false, skipped: true, screen: null, level: null, missing: [] });
   }, 30_000);
 
   // Issue #21: the screen tool hands back the Instance's flattened Screen.

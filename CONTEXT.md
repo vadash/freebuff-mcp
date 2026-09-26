@@ -2,7 +2,9 @@
 
 Domain language for this repo. Decisions and their reasons live in
 [`docs/adr/`](docs/adr/); start with
-[ADR-0001](docs/adr/0001-supervised-freebuff-cli.md).
+[ADR-0001](docs/adr/0001-supervised-freebuff-cli.md). Why screen recognition is
+tolerant and the fixture corpus accumulates:
+[ADR-0002](docs/adr/0002-tolerant-screen-signatures.md).
 
 ## Moving parts
 

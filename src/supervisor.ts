@@ -5,8 +5,8 @@ import { ERROR_LOG_PATH, ERROR_LOG_POLL_MS, FAILURE_SCREEN_LINES, FREEZE_POLL_MA
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
-import { checkMarkers } from './doctor.ts';
 import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
+import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -50,7 +50,12 @@ export type SupervisorResponse =
   | { ok: true; kind: 'answer'; answer: string }
   | ({ ok: true; kind: 'status' } & StatusPayload)
   | { ok: true; kind: 'screen'; screen: string }
-  | { ok: true; kind: 'doctor'; skipped: boolean; failures: string[] }
+  // Issue #29: doctor's verdict is the recognition function's output for the showing
+  // Screen — pass (every Marker), degraded (Drift: threshold met, some Marker missing)
+  // or fail; `screen` is null when nothing is recognized and the fields are null when
+  // the check is skipped (Instance starting, busy or dead).
+  | ({ ok: true; kind: 'doctor'; skipped: false } & Recognition)
+  | { ok: true; kind: 'doctor'; skipped: true; screen: null; level: null; missing: [] }
   | { ok: false; kind: 'error'; error: string }
   | { ok: false; kind: 'bound_dir_locked'; boundDir: string; unlocksInMinutes: number; error: string }
   | { ok: false; kind: 'busy'; position: number; error: string };
@@ -162,10 +167,13 @@ export class Supervisor {
         // The live check needs an idle Instance's Screen; otherwise it is skipped, not passed.
         // An Instance whose Markers drifted may read as 'stopped', so check any live idle one.
         const observed = this.observedState();
+        const recognized = this.driver.isAlive() && observed !== 'busy' && observed !== 'spawning'
+          ? recognizeScreen(this.driver.screenText())
+          : null;
         reply(
-          this.driver.isAlive() && observed !== 'busy' && observed !== 'spawning'
-            ? { ok: true, kind: 'doctor', skipped: false, failures: checkMarkers(this.driver.screenText()) }
-            : { ok: true, kind: 'doctor', skipped: true, failures: [] },
+          recognized === null
+            ? { ok: true, kind: 'doctor', skipped: true, screen: null, level: null, missing: [] }
+            : { ok: true, kind: 'doctor', skipped: false, ...recognized },
         );
         break;
       }

@@ -102,7 +102,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   );
   server.tool(
     'doctor',
-    'Check the terminal markers expected for the current state against the live freebuff screen.',
+    'Report pass, degraded or fail for the showing freebuff screen against its Screen signature, naming the missing Markers when Drift has started.',
     {},
     async () => result(await client.request({ op: 'doctor' })),
   );
@@ -124,7 +124,7 @@ const result = (response: SupervisorResponse): ToolContent => {
       return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
     }
     case 'doctor':
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: !response.skipped && response.failures.length === 0, skipped: response.skipped, failures: response.failures }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: !response.skipped && response.level === 'pass', skipped: response.skipped, screen: response.screen, level: response.level, missing: response.missing }) }] };
     case 'screen':
       return { content: [{ type: 'text', text: response.screen }] };
     case 'ok':

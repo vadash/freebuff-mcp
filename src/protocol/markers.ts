@@ -8,9 +8,6 @@ export const CONNECTING = 'Connecting';
 // never a ready Screen's unrelated text (issue #22).
 export const CONNECTING_REGEX = new RegExp(`\\b${CONNECTING}\\b`, 'i');
 export const PICKER_TITLE = 'Start coding for free';
-// Picker hint row added by the 0.0.198 update (`H · History` above the bottom border;
-// session-in-use.ansi shows it under the dialog). Checked by doctor on the Model picker.
-export const HISTORY_HINT = 'H · History';
 export const TURN_END_MSG = 'Main prompt finished';
 export const LOGIN_REQUIRED = 'Not authenticated';
 // Single-instance dialogs: the 2026-09 CLI (0.0.198+) says 'Session already in use';
