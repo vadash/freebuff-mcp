@@ -52,7 +52,7 @@ export const countdownMinutes = (text: string): number | null => {
   return hours * 60 + minutes;
 };
 
-/** Model observed on the ready status line (`Solar Mini 4 · 1h left · 12.9K (3%)`): the
+/** Model observed on the ready status line (`GLM 5.3 Flash · 58m left · 12.8K (1%)`): the
  *  segment before the first `·` on the line carrying the Countdown; null when absent. */
 export const statusModel = (text: string): string | null => {
   const line = text.split('\n').find((candidate) => COUNTDOWN_REGEX.test(candidate) && candidate.includes(STATUS_SEPARATOR));

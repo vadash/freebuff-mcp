@@ -11,9 +11,6 @@
 
 
 
-
-
-
  ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ You started Freebuff in a subdirectory of a git repo.                                                                                                   x │
  │ Switch to git root (C:\projects\_llm\freebuff-mcp)                                                                                                        │
@@ -31,17 +28,20 @@
 
   Directory C:\projects\_llm\freebuff-mcp\.probe\capture
 
-   [02:48 PM]
+   [04:12 AM]
    Reply with exactly one word and nothing else: ping ⎘
 
-  pong
-                                                                                                                                                  ⎘ • 2s • △▽
+  • Thinking
+    The user wants exactly one word as a reply, nothing else.
 
-   [02:49 PM]
+  pong
+                                                                                                                                                  ⎘ • 4s • △▽
+
+   [04:12 AM]
    /definitely-not-a-freebuff-command ⎘
 
   Command not found: "/definitely-not-a-freebuff-command"
-╭─────────────────────────────────────────────────────────────Session ended  ·  20 Freebucks left──────────────────────────────────────────────────────────────╮
+╭────────────────────────────────────────────────────────────────────────Session ended─────────────────────────────────────────────────────────────────────────╮
 │                                                                                                                                       ╭────────────────────╮ │
 │ Press Enter to continue in a new session                                                                                              │ Change model   Esc │ │
 │                                                                                                                                       ╰────────────────────╯ │

@@ -55,14 +55,17 @@ export const PASTE_END = '\x1b[201~';
 // Screen regexes over the flattened Screen text.
 // Countdown on the ready status line: `7h 12m left`, `1h left`, `59m left`, `2:58 left` (ready.ansi).
 export const COUNTDOWN_REGEX = /(?:(\d+)h(?:\s+(\d+)m)?|(\d+)m)\s+left|(\d+):(\d\d)\s+left/;
-// Status line separator: `Solar Mini 4 · 1h left · 12.9K (3%)`; the model is the leading segment.
+// Status line separator: `GLM 5.3 Flash · 58m left · 12.8K (1%)`; the model is the leading segment.
 export const STATUS_SEPARATOR = '·';
 // Price on a picker row: `5 Freebucks/hr` (picker-expanded.ansi).
 export const PRICE_REGEX = /(\d+)\s+Freebucks\/hr/;
-// Balance on the picker: `FREE · 20/25 Freebucks daily · resets in 9h 12m`; an exhausted
-// day shows `0/25` or `0/40`. There is no separate low-Freebucks literal in 0.0.193: the
+// Balance on the picker: `FREE · 25/25 Freebucks daily · resets in 19h 50m · 15 in wallet`
+// (picker-expanded.ansi; 0.0.199 added the wallet suffix). An exhausted
+// day shows `0/25` or `0/40`. There is no separate low-Freebucks literal: the
 // low state is this left number falling below a model's price (fixture README).
 export const FREEBUCKS_BALANCE_REGEX = /(\d+)\/(\d+)\s+Freebucks daily/;
-// Remaining balance on the Continue screen: `Session ended  ·  20 Freebucks left`.
+// Remaining balance as the 0.0.193 Continue screen rendered it (`Session ended  ·  20 Freebucks left`);
+// the 0.0.199 Continue screen no longer shows any balance. Kept for the freeze signature
+// (such a line must never mask a freeze) and older-build tolerance.
 export const FREEBUCKS_LEFT_REGEX = /(\d+)\s+Freebucks left/;
 export const VERSION_BANNER_REGEX = /freebuff\s+v(\S+)/i;

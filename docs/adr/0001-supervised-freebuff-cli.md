@@ -61,9 +61,12 @@ final answer back, and it restarts often.
 
 - `bind` spawns the Instance straight away and leaves it at the picker, so
   `needs_login`, updates, and bad directories surface before any task.
-- A live freebuff the supervisor did not start is killed at spawn
-  (`taskkill /PID <pid> /T /F`); only one can run, and killing is cheap since
-  the Hour session resumes on relaunch.
+- A live freebuff the supervisor did not start: legacy builds record the holder
+  pid in a lock file, which the supervisor kills at spawn
+  (`taskkill /PID <pid> /T /F`). The 2026-09 CLI (0.0.198+) writes no pid
+  record — it refuses a second spawn itself with the Session-in-use dialog,
+  and the settle loop answers it with `Take over` unconditionally (killing is
+  cheap since the Hour session resumes on relaunch).
 - Stopping the supervisor's own Instance is always a kill, including
   `cancel_task`.
 
@@ -86,14 +89,21 @@ final answer back, and it restarts often.
 
 At the picker, in order:
 
-1. If the Freebucks balance covers the price shown on the first line containing
+1. If the Freebucks balance covers the price shown on the first row containing
    `deepseek`, pick it.
-2. Else the first line containing `glm`.
-3. Else the first line containing `mimo`.
-4. Else the top line.
+2. Else the first row containing `glm`.
+3. Else the first row containing `mimo`.
+4. Else the top row.
 
-Matching is a case-insensitive substring. `status.activeModel` reports the
-model observed on screen. The model policy file (`FREEBUFF_MODELS_FILE`) and the
+Matching is a case-insensitive substring in displayed order; affordability gates
+only the deepseek candidate. The rule runs over the picker rows and balance
+parsed from the Screen (`classifyScreen().entries`, `freebucksBalance`), not raw
+lines. Verified against the 0.0.199 capture (2026-09-26): the picker is born
+collapsed to a single `GLM 5.3 Flash` row (`0 Freebucks/hr`, `↓  See all 5
+models` below), so the rule lands on GLM and the deepseek affordability gate is
+not exercised by today's wording; the seam stays covered by stub tests with
+synthetic rows. `status.activeModel` reports the model observed on the ready
+status line. The model policy file (`FREEBUFF_MODELS_FILE`) and the
 `settings.json` `freebuffModel` write are removed: CLI v0.0.188 ignores that
 setting. This reverses spec #1's "never switch models with arrow keys", which
 relied on that setting. The rule is hardcoded for v1 and easy to reverse.

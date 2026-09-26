@@ -4,10 +4,12 @@ import { checkMarkers } from '../src/doctor.ts';
 import { flattenScreen } from '../src/protocol/screen.ts';
 
 const screen = async (name: string): Promise<string> =>
-  flattenScreen([readFileSync(new URL(`./fixtures/screen/${name}`, import.meta.url), 'utf8')]);
+  // Fixtures store \n; the real PTY emits \r\n, and LF alone keeps the column in the
+  // emulator and mangles long rows (see screen.test.ts). Replay as the PTY would.
+  flattenScreen([readFileSync(new URL(`./fixtures/screen/${name}`, import.meta.url), 'utf8').replace(/\n/g, '\r\n')]);
 
 describe('checkMarkers', () => {
-  it.each(['ready.ansi', 'continue.ansi'])('finds every expected Marker on %s', async (name) => {
+  it.each(['picker-expanded.ansi', 'ready.ansi', 'continue.ansi', 'session-in-use.ansi'])('finds every expected Marker on %s', async (name) => {
     expect(checkMarkers(await screen(name))).toEqual([]);
   });
 
@@ -21,13 +23,6 @@ describe('checkMarkers', () => {
       'H · History',
     ].join('\n');
     expect(checkMarkers(picker)).toEqual([]);
-  });
-
-  it('names the picker hint row missing from the 0.0.193 capture that predates it', async () => {
-    // Real capture from 0.0.193; the `H · History` hint row was added by the 0.0.198
-    // update. The capture refresh (slice 5) replaces this fixture; until then the
-    // skew is the honest expectation.
-    expect(checkMarkers(await screen('picker-expanded.ansi'))).toEqual([expect.stringMatching(/^HISTORY_HINT: /)]);
   });
 
   it('recognizes the Session-in-use dialog in both known wordings', () => {
@@ -49,7 +44,7 @@ describe('checkMarkers', () => {
 
   it('names the drifted Marker when the picker title wording changes', async () => {
     const text = (await screen('picker-expanded.ansi')).replace('Start coding for free', 'Pick a model');
-    expect(checkMarkers(text)).toEqual([expect.stringMatching(/^PICKER_TITLE: /), expect.stringMatching(/^HISTORY_HINT: /)]);
+    expect(checkMarkers(text)).toEqual([expect.stringMatching(/^PICKER_TITLE: /)]);
   });
 
   it('names the drifted Countdown on a ready Screen', async () => {
@@ -60,7 +55,7 @@ describe('checkMarkers', () => {
   it('reports a Screen matching no known screen, naming every table entry', () => {
     const [failure] = checkMarkers('something else entirely');
     expect(failure).toContain('no known screen');
-    for (const name of ['PICKER_TITLE', 'PRICE_REGEX', 'FREEBUCKS_BALANCE_REGEX', 'HISTORY_HINT', 'READY_PROMPT', 'COUNTDOWN_REGEX', 'SESSION_ENDED', 'CONTINUE_PROMPT', 'FREEBUCKS_LEFT_REGEX', 'SINGLE_INSTANCE_MARKERS', 'LOGIN_REQUIRED', 'CONNECTING_REGEX']) {
+    for (const name of ['PICKER_TITLE', 'PRICE_REGEX', 'FREEBUCKS_BALANCE_REGEX', 'HISTORY_HINT', 'READY_PROMPT', 'COUNTDOWN_REGEX', 'SESSION_ENDED', 'CONTINUE_PROMPT', 'SINGLE_INSTANCE_MARKERS', 'LOGIN_REQUIRED', 'CONNECTING_REGEX']) {
       expect(failure).toContain(name);
     }
   });

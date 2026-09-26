@@ -3,7 +3,6 @@ import {
   CONTINUE_PROMPT,
   COUNTDOWN_REGEX,
   FREEBUCKS_BALANCE_REGEX,
-  FREEBUCKS_LEFT_REGEX,
   HISTORY_HINT,
   LOGIN_REQUIRED,
   PICKER_TITLE,
@@ -46,7 +45,6 @@ const SCREEN_MARKERS: Record<IdleScreen, ScreenEntry> = {
   Continue: { markers: [
     ['SESSION_ENDED', SESSION_ENDED],
     ['CONTINUE_PROMPT', CONTINUE_PROMPT],
-    ['FREEBUCKS_LEFT_REGEX', FREEBUCKS_LEFT_REGEX],
   ] },
   'Session-in-use dialog': { markers: [['SINGLE_INSTANCE_MARKERS', mentionsSingleInstance]] },
   'login gate': { markers: [['LOGIN_REQUIRED', LOGIN_REQUIRED]] },

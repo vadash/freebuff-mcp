@@ -8,8 +8,6 @@ import { expect } from 'vitest';
 import { z } from 'zod';
 import { requestPipe } from '../../src/ipc.ts';
 import { sleep } from '../../src/util.ts';
-import { insertHintRow } from './picker-rows.mjs';
-
 export const stubPath = fileURLToPath(new URL('../stub-freebuff.mjs', import.meta.url));
 export const supervisorEntry = fileURLToPath(new URL('../../src/supervisor.ts', import.meta.url));
 export const serverEntry = fileURLToPath(new URL('../../src/server.ts', import.meta.url));
@@ -135,11 +133,10 @@ export const answerOf = (result: { content: Array<{ type: string; text?: string 
 // padding trimmed. Screens and fixtures only compare equal row-by-row right-trimmed.
 export const trimRows = (text: string): string => text.replace(/[ \t]+$/gm, '').replace(/\n+$/, '');
 
-// The stub stands in for the current CLI: the captured 0.0.193 picker fixture plus the
-// 0.0.198 `H · History` hint row (see picker-rows.mjs, issue #22). This is the expected
-// tail of the stub's picker Screen until the capture refresh (slice 5).
+// The stub stands in for the current CLI: it replays the captured picker fixture
+// verbatim, so the expected tail of its picker Screen is the fixture's own rows.
 export const stubPickerRows = (): string =>
-  insertHintRow(readFileSync(new URL('../fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '').split('\n')).join('\n');
+  readFileSync(new URL('../fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '');
 
 // Issues #18/#23: what the stub received, from FREEBUFF_STUB_INPUT_LOG — each spawn,
 // each bracketed paste, each submitted line, and each screen-changing Enter.

@@ -3,8 +3,7 @@
 // duplicate src/protocol/{markers,chatStore}.ts on purpose so the driver under
 // test is the only side consuming the real modules. The Model picker and the
 // Continue screen replay the real captured fixtures verbatim
-// (tests/fixtures/screen/README.md) — the picker plus the 0.0.198 `H · History`
-// hint row the fixture predates; FREEBUFF_STUB_COUNTDOWN_MIN,
+// (tests/fixtures/screen/README.md); FREEBUFF_STUB_COUNTDOWN_MIN,
 // FREEBUFF_STUB_FREEBUCKS and FREEBUFF_STUB_PICKER override the numbers the
 // protocol reads; FREEBUFF_STUB_SESSION_ALIVE=1 boots into the ready screen of
 // an unexpired Hour session instead of the picker. The displayed model is
@@ -22,7 +21,6 @@
 // the driver's fallback cadence, and every Enter lands in the input log.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { insertHintRow } from './helpers/picker-rows.mjs';
 
 const READY_PROMPT = 'Enter a coding task or / for commands';
 const CONNECTING = 'Connecting';
@@ -50,7 +48,6 @@ const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
 // Env controls (issue #11): Countdown minutes, Freebucks balance, picker entries and prices.
 let countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
 const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
-const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? '20/25').split('/').map(Number);
 const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
 const turnLines = process.env.FREEBUFF_STUB_TURN_LINES ? JSON.parse(process.env.FREEBUFF_STUB_TURN_LINES) : [];
 let turnCounter = 0;
@@ -62,6 +59,10 @@ const logInput = (entry) => {
 const bannerLine = `freebuff v${version}`;
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/screen/${name}`, import.meta.url), 'utf8');
+// Default balance numbers come from the captured fixture, so a capture refresh
+// cannot desync the stub's replayed picker from the harness's expected tail.
+const fixtureBalance = (BALANCE_LINE.exec(fixture('picker-expanded.ansi'))?.[0].match(/\d+\/\d+/) ?? ['20/25'])[0];
+const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? fixtureBalance).split('/').map(Number);
 // Fixtures store the flattened screen with \n; the ConPTY on the other side of the
 // driver needs \r\n, exactly like the real TUI's output.
 const crlf = (text) => text.replace(/\n/g, '\r\n');
@@ -107,10 +108,8 @@ const pickerScreen = () => {
       ...lines.slice(balance),
     ];
   }
-  // The 0.0.198 update added the `H · History` hint row above the bottom border
-  // (issue #22); the fixture predates it, so the stub — which stands in for the
-  // current CLI — inserts it (shared transform with the test harness).
-  rows = insertHintRow(rows);
+  // The 0.0.198-era synthetic hint row is gone: the captured fixture renders the
+  // `H · History` row itself, and the stub replays it verbatim.
   const body = rows.map((line) => line.replace(BALANCE_LINE, `FREE · ${balanceLeft}/${balanceDaily} Freebucks daily`));
   return CLEAR + crlf([bannerLine, cwd, ...body].join('\n'));
 };

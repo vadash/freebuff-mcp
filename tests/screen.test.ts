@@ -25,7 +25,7 @@ const verdict = (over: Record<string, unknown> = {}): Record<string, unknown> =>
 
 describe('classifyScreen', () => {
   it('reports a ready prompt with the Countdown from the status line', async () => {
-    expect(classifyScreen(await screen('ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 60, activeModel: 'Solar Mini 4' }));
+    expect(classifyScreen(await screen('ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
   });
 
   it('reports the connecting spinner even when the prompt is rendered below', async () => {
@@ -49,19 +49,14 @@ describe('classifyScreen', () => {
 });
 
 describe('classifyScreen against the real captured fixtures (issue #11)', () => {
-  it('extracts the real picker entries with their displayed prices', async () => {
+  it('extracts the real picker entry with its displayed price', async () => {
     const parsed = classifyScreen(await screen('picker-expanded.ansi'));
-    expect(parsed.entries).toEqual([
-      { name: 'GLM 5.3 Flash', price: 0 },
-      { name: 'MiMo 2.6 Flash', price: 0 },
-      { name: 'Solar Mini 4', price: 0 },
-      { name: 'DeepSeek V4.1 Flash', price: 5 },
-    ]);
+    expect(parsed.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }]);
   });
 
   it('extracts the Freebucks balance and daily allowance from the real picker', async () => {
     const parsed = classifyScreen(await screen('picker-expanded.ansi'));
-    expect(parsed.freebucksBalance).toBe(20);
+    expect(parsed.freebucksBalance).toBe(25);
     expect(parsed.freebucksDaily).toBe(25);
     expect(parsed.countdownMinutes).toBeNull();
     expect(parsed.continueScreen).toBe(false);
@@ -71,12 +66,12 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
     expect(classifyScreen(await screen('picker-expanded.ansi')).continueScreen).toBe(false);
   });
 
-  it('sees the Continue screen with its remaining balance', async () => {
+  it('sees the Continue screen; 0.0.199 no longer shows a remaining balance', async () => {
     const parsed = classifyScreen(await screen('continue.ansi'));
     expect(parsed.continueScreen).toBe(true);
     expect(parsed.ready).toBe(false);
     expect(parsed.picker).toBeNull();
-    expect(parsed.freebucksBalance).toBe(20);
+    expect(parsed.freebucksBalance).toBeNull();
     expect(parsed.freebucksDaily).toBeNull();
     expect(parsed.countdownMinutes).toBeNull();
   });
@@ -119,7 +114,7 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
 
 describe('flattenScreen', () => {
   it('renders chunks through one shared screen', async () => {
-    expect(classifyScreen(await flattenScreen([load('ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 60, activeModel: 'Solar Mini 4' }));
+    expect(classifyScreen(await flattenScreen([load('ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
   });
 
   it('reassembles an escape sequence split mid-sequence', async () => {
@@ -159,7 +154,7 @@ describe('flattenScreen', () => {
 describe('freezeSignature', () => {
   it('ignores the ticking Countdown on the ready status line', async () => {
     const ready = await screen('ready.ansi');
-    const ticked = ready.replace('1h left', '59m left');
+    const ticked = ready.replace('58m left', '57m left');
     expect(ticked).not.toBe(ready);
     expect(freezeSignature(ticked)).toBe(freezeSignature(ready));
   });

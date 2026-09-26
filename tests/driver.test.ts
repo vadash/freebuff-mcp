@@ -39,7 +39,7 @@ const harness = (
 describe('FreebuffDriver', () => {
   it('resolves with the exact scripted answer on the collapsed-picker happy path', async () => {
     const { driver, dir } = harness('happy');
-    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello driver');
+    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(GLM 5.3 Flash): hello driver');
   }, 30_000);
 
   it('retries the submit once, then rejects ack-missing without hanging', async () => {
@@ -51,7 +51,7 @@ describe('FreebuffDriver', () => {
 
   it('picks a model at the expanded picker and still completes', async () => {
     const { driver, dir } = harness('happy');
-    await expect(driver.runTask(dir, 'pick me')).resolves.toBe('stub(DeepSeek V4.1 Flash): pick me');
+    await expect(driver.runTask(dir, 'pick me')).resolves.toBe('stub(GLM 5.3 Flash): pick me');
   }, 30_000);
 
   it('rejects process-exited when the agent dies mid-turn', async () => {
@@ -68,18 +68,13 @@ describe('FreebuffDriver', () => {
   it('idles at the replayed picker without pressing enter and probes the balance', async () => {
     const { driver, dir } = harness('happy', undefined, { keepAlive: true });
     expect(await driver.awaitIdle(dir)).toBe('picker');
-    expect(driver.screenText()).toContain('20/25 Freebucks daily');
+    expect(driver.screenText()).toContain('25/25 Freebucks daily');
     const verdict = classifyScreen(driver.screenText());
-    expect(verdict.entries).toEqual([
-      { name: 'GLM 5.3 Flash', price: 0 },
-      { name: 'MiMo 2.6 Flash', price: 0 },
-      { name: 'Solar Mini 4', price: 0 },
-      { name: 'DeepSeek V4.1 Flash', price: 5 },
-    ]);
-    expect(verdict.freebucksBalance).toBe(20);
+    expect(verdict.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }]);
+    expect(verdict.freebucksBalance).toBe(25);
     const probe = driver.probe();
     expect(probe.freebucksDaily).toBe(25);
-    expect(probe.freebucksBalance).toBe(20);
+    expect(probe.freebucksBalance).toBe(25);
     expect(probe.hourSessionMinutesLeft).toBeNull();
     await driver.stop();
   }, 30_000);
@@ -97,11 +92,11 @@ describe('FreebuffDriver', () => {
     while (!driver.screenText().includes(CONTINUE_PROMPT) && Date.now() < deadline) await sleep(100);
     const verdict = classifyScreen(driver.screenText());
     expect(verdict.continueScreen).toBe(true);
-    expect(verdict.freebucksBalance).toBe(20);
+    expect(verdict.freebucksBalance).toBeNull();
     expect(verdict.ready).toBe(false);
     expect(await driver.awaitIdle(dir)).toBe('picker');
     expect(driver.screenText()).toContain(CONTINUE_PROMPT);
-    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(DeepSeek V4.1 Flash): after continue');
+    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(GLM 5.3 Flash): after continue');
     expect(driver.screenText()).not.toContain(CONTINUE_PROMPT);
     await driver.stop();
   }, 30_000);
@@ -165,7 +160,7 @@ describe('FreebuffDriver', () => {
     });
     writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.231' }));
     const started = Date.now();
-    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello');
+    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(GLM 5.3 Flash): hello');
     const elapsed = Date.now() - started;
     // The first fallback Enter lands after ~10 s of unknown Screen, not at the 3 s
     // throttle floor, and long before the 20 s ready deadline.

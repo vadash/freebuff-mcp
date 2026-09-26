@@ -96,8 +96,8 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'picker' });
     const atPicker = await requestPipe<{ screen: string }>(pipeName, { op: 'screen' });
     expect(atPicker).toMatchObject({ ok: true, kind: 'screen' });
-    // Pipe seam: the stub replays the captured picker fixture (plus the 0.0.198 hint
-    // row, see stubPickerRows) under its banner + directory header, and the op hands
+    // Pipe seam: the stub replays the captured picker fixture verbatim (see
+    // stubPickerRows) under its banner + directory header, and the op hands
     // back exactly that flattened text.
     expect(trimRows(atPicker.screen).endsWith(trimRows(stubPickerRows()))).toBe(true);
     const task = requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'screen states' }, 30_000);
@@ -153,7 +153,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'fallback task' },
       30_000,
     );
-    expect(run).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): fallback task' });
+    expect(run).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): fallback task' });
     await pollStatus(pipeName, { state: 'ready' });
     // One Enter total: the fallback stopped once a recognized screen appeared.
     expect(inputsOf('enter')).toHaveLength(1);
@@ -173,14 +173,14 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'first task' },
       30_000,
     );
-    expect(first).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): first task' });
-    await pollStatus(pipeName, { state: 'ready', activeModel: 'DeepSeek V4.1 Flash', queueDepth: 0 });
+    expect(first).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): first task' });
+    await pollStatus(pipeName, { state: 'ready', activeModel: 'GLM 5.3 Flash', queueDepth: 0 });
     const second = await requestPipe<Record<string, unknown>>(
       pipeName,
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second task' },
       30_000,
     );
-    expect(second).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second task' });
+    expect(second).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): second task' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     expect(readFileSync(join(dirs.configDir, 'freebuff.lock'), 'utf8')).toBe(lockBefore);
   }, 30_000);
@@ -231,7 +231,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'second' },
       30_000,
     );
-    expect(second).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): second' });
+    expect(second).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): second' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 30_000);
 
@@ -400,7 +400,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       }
       let task: SupervisorResponse | undefined;
       await sup.handle({ op: 'run_prompt', dir: dirs.otherDir, prompt: 'after purge' }, (response) => { task = response; });
-      expect(task).toEqual({ ok: true, kind: 'answer', answer: 'stub(DeepSeek V4.1 Flash): after purge' });
+      expect(task).toEqual({ ok: true, kind: 'answer', answer: 'stub(GLM 5.3 Flash): after purge' });
       let status: SupervisorResponse | undefined;
       await sup.handle({ op: 'status' }, (response) => { status = response; });
       if (!status || !('state' in status)) throw new Error(`bad status reply: ${JSON.stringify(status)}`);
@@ -433,7 +433,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(overflow.ok).toBe(false);
     expect(overflow.position).toBe(5);
     await Promise.all(tasks);
-    expect(answers).toEqual(['stub(DeepSeek V4.1 Flash): p1', 'stub(DeepSeek V4.1 Flash): p2', 'stub(DeepSeek V4.1 Flash): p3', 'stub(DeepSeek V4.1 Flash): p4', 'stub(DeepSeek V4.1 Flash): p5']);
+    expect(answers).toEqual(['stub(GLM 5.3 Flash): p1', 'stub(GLM 5.3 Flash): p2', 'stub(GLM 5.3 Flash): p3', 'stub(GLM 5.3 Flash): p4', 'stub(GLM 5.3 Flash): p5']);
   }, 30_000);
 
   it('routes prompts above the paste threshold through a temp file and keeps small prompts on the paste path', async () => {
@@ -464,7 +464,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'tiny payload' },
       30_000,
     );
-    expect(small).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): tiny payload' });
+    expect(small).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): tiny payload' });
     expect(latestFirstMsg(dirs.taskDir)).toBe('tiny payload');
     expect(existsSync(join(dirs.taskDir, '.freebuff-task-2.md'))).toBe(false);
   }, 30_000);
@@ -499,7 +499,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(victimResult.ok).toBe(false);
     expect(victimResult.error).toMatch(/cancel/i);
     const survivorResult = await survivor;
-    expect(survivorResult).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): survivor' });
+    expect(survivorResult).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): survivor' });
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
   }, 30_000);
 
@@ -529,7 +529,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'after reset' },
       30_000,
     );
-    expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): after reset' });
+    expect(next).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): after reset' });
     expect(inputsOf('spawn')).toHaveLength(1);
   }, 30_000);
 
@@ -557,7 +557,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt },
       30_000,
     );
-    expect(done).toMatchObject({ ok: true, answer: `stub(DeepSeek V4.1 Flash): ${prompt}` });
+    expect(done).toMatchObject({ ok: true, answer: `stub(GLM 5.3 Flash): ${prompt}` });
     expect(textsOf('paste')).toEqual([prompt]);
     expect(textsOf('submit')).toEqual(['/new', prompt]);
     expect(latestFirstMsg(dirs.taskDir)).toBe(prompt);
@@ -581,7 +581,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'answered' },
       30_000,
     );
-    expect(next).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): answered' });
+    expect(next).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): answered' });
     expect(inputsOf('spawn')).toHaveLength(1);
   }, 30_000);
 
@@ -607,7 +607,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     );
     const failed = await first;
     const elapsedMs = Date.now() - started;
-    await expect(next).resolves.toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): next task' });
+    await expect(next).resolves.toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): next task' });
     expect(promptCount(prompt)).toBe(1);
     await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     return { failed, elapsedMs };
@@ -656,7 +656,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       await expect(requestPipe(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt }, 30_000)).resolves.toMatchObject({
         ok: true,
         kind: 'answer',
-        answer: `stub(DeepSeek V4.1 Flash): ${prompt}`,
+        answer: `stub(GLM 5.3 Flash): ${prompt}`,
       });
     }
   };
@@ -697,7 +697,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
         { op: 'run_prompt', dir: dirs.taskDir, prompt: 'over a live holder' },
         30_000,
       );
-      expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): over a live holder' });
+      expect(done).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): over a live holder' });
     } finally {
       holder.kill();
       bystander.kill();
@@ -719,7 +719,7 @@ describe('supervisor daemon (named-pipe protocol)', () => {
       { op: 'run_prompt', dir: dirs.taskDir, prompt: 'stale ok' },
       30_000,
     );
-    expect(done).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): stale ok' });
+    expect(done).toMatchObject({ ok: true, answer: 'stub(GLM 5.3 Flash): stale ok' });
   }, 30_000);
 
   it('reports countdown, freebucks, and update fields on status', async () => {

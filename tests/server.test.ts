@@ -67,8 +67,8 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task two' } })
       .then((r) => completions.push(toolText(r as CallResult)));
     await Promise.all([first, second]);
-    expect(completions).toEqual(['stub(DeepSeek V4.1 Flash): task one', 'stub(DeepSeek V4.1 Flash): task two']);
-    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'DeepSeek V4.1 Flash', queueDepth: 0 });
+    expect(completions).toEqual(['stub(GLM 5.3 Flash): task one', 'stub(GLM 5.3 Flash): task two']);
+    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'GLM 5.3 Flash', queueDepth: 0 });
     expect(status.boundDir).toContain('freebuff-sup-task-');
     const toolStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
     expect(toolStatus.hourSessionMinutesLeft).toBe(432);
@@ -130,7 +130,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       name: 'run_prompt',
       arguments: { dir: dirs.taskDir, prompt: 'after reset' },
     })) as CallResult;
-    expect(toolText(next)).toBe('stub(DeepSeek V4.1 Flash): after reset');
+    expect(toolText(next)).toBe('stub(GLM 5.3 Flash): after reset');
   }, 30_000);
 
   it('survives the MCP client disconnecting and completes the in-flight task', async () => {
@@ -167,11 +167,11 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
 
     const second = boot('slow');
     await second.connect(transport!);
-    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'GLM 5.3 Flash' });
     const status = JSON.parse(
       toolText((await second.callTool({ name: 'status', arguments: {} })) as CallResult),
     ) as Record<string, unknown>;
-    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
+    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'GLM 5.3 Flash' });
     expect(String(status.boundDir)).toContain('freebuff-sup-task-');
   }, 30_000);
 
@@ -188,7 +188,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(overflow.isError).toBe(true);
     expect(JSON.parse(overflow.content[0]!.text ?? '')).toEqual({ busy: true, position: 5 });
     const answers = (await Promise.all(tasks)).map((r) => toolText(r as CallResult));
-    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(DeepSeek V4.1 Flash): ${prompt}`));
+    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(GLM 5.3 Flash): ${prompt}`));
   }, 30_000);
 
   it('runs the doctor protocol check through the supervisor op', async () => {

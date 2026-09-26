@@ -33,9 +33,11 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 - **MCP server**: the stdio proxy the harness launches. Holds no state.
 - **Driver**: the code that runs the Instance in a pseudo-terminal, types into
   it, and reads the Screen and Chat store.
-- **Instance**: one running freebuff process. Only one may exist on the
-  machine. Killing it is cheap because the Hour session resumes on relaunch.
-  _Avoid:_ "session" (for the process).
+- **Instance**: one running freebuff process. At most one Instance holds the
+  Hour session; a second spawn is refused with the Session-in-use dialog, and
+  `Take over` is the recovery path. The CLI writes no pid record to disk —
+  the Supervisor reads the pid from its own PTY. Killing it is cheap because
+  the Hour session resumes on relaunch. _Avoid:_ "session" (for the process).
 
 ### Freebuff's economy
 
