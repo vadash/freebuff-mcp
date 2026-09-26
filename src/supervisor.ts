@@ -207,6 +207,9 @@ export class Supervisor {
       return;
     }
     if (this.boundDir !== null && resolved !== this.boundDir) {
+      // Issue #30 (story 10 of #25): unknown minutes (the Countdown is absent or drifted) are
+      // never read as zero and never enforce the lock — a fresh or expired Hour session
+      // shows no Countdown at all, so only proven minutes may block a switch.
       const minutesLeft = this.driver.probe().hourSessionMinutesLeft;
       if (minutesLeft !== null && minutesLeft > BIND_LOCK_GRACE_MINUTES) {
         const unlocksInMinutes = minutesLeft - BIND_LOCK_GRACE_MINUTES;

@@ -312,6 +312,17 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'picker', boundDir: resolve(dirs.otherDir) });
   }, 30_000);
 
+  // Issue #30 (story 10 of #25): a missing Countdown on ready is unknown time left,
+  // reported as null (never zero), and the Bind lock only enforces on proven minutes.
+  it('binds through a ready screen whose Countdown is missing: unknown minutes never enforce the lock', async () => {
+    boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_NO_COUNTDOWN: '1' } });
+    await waitForPipe(pipeName, 10_000);
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.taskDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: null, activeModel: null });
+    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: dirs.otherDir })).ok).toBe(true);
+    await pollStatus(pipeName, { state: 'ready', boundDir: resolve(dirs.otherDir) });
+  }, 30_000);
+
   it('treats a same-directory rebind as a no-op without respawning', async () => {
     boot('happy');
     await waitForPipe(pipeName, 10_000);

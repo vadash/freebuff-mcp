@@ -48,6 +48,9 @@ const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
 // Env controls (issue #11): Countdown minutes, Freebucks balance, picker entries and prices.
 let countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
 const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
+// Issue #30: renders the ready status line without its Countdown segment, so tests see
+// the parse fallbacks for unknown time left (`FREEBUFF_STUB_NO_COUNTDOWN=1`).
+const noCountdown = process.env.FREEBUFF_STUB_NO_COUNTDOWN === '1';
 const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
 const turnLines = process.env.FREEBUFF_STUB_TURN_LINES ? JSON.parse(process.env.FREEBUFF_STUB_TURN_LINES) : [];
 let turnCounter = 0;
@@ -125,7 +128,7 @@ const unknownScreen = () =>
 
 // Ready input box with the Hour-session status line, in the captured wording.
 const readyScreen = () => {
-  const status = ` ${model} · ${countdownText(countdownMin)} · 12.9K (3%)`;
+  const status = ` ${model}${noCountdown ? '' : ` · ${countdownText(countdownMin)}`} · 12.9K (3%)`;
   const endButton = '✕ End session';
   const statusLine = status + ' '.repeat(Math.max(1, 157 - status.length - endButton.length)) + endButton;
   return CLEAR + crlf(

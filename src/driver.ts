@@ -68,7 +68,9 @@ const turnBaseline = (snaps: ChatDirSnapshot[]): TurnBaseline => {
 
 // ADR-0001 #6: first deepseek the balance can afford, else first glm, else first mimo,
 // else the top row. Case-insensitive substring in displayed order; affordability gates
-// only the deepseek candidate.
+// only the deepseek candidate. Both parse fallbacks land safe (issue #30): no parseable
+// rows → index 0, one Enter on the highlighted row (Fallback Enter; story 9 of #25); a
+// missing balance skips deepseek, since affordability cannot be proven (story 11 of #25).
 export const pickModelIndex = (entries: PickerEntry[], balance: number | null): number => {
   const first = (needle: string): number => entries.findIndex((entry) => entry.name.toLowerCase().includes(needle));
   const deepseek = first('deepseek');

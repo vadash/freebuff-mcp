@@ -44,7 +44,7 @@ freebuff instance survives it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. Same directory is a no-op. The Bind lock refuses a switch while more than 30 minutes of the Hour session remain. |
+| `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. Same directory is a no-op. The Bind lock refuses a switch while more than 30 minutes of the Hour session remain; a missing or drifted Countdown leaves the minutes unknown, which never enforces the lock. |
 | `run_prompt` | `dir`, `prompt` | Queues the prompt and waits for freebuff's final answer. `dir` must equal the bound directory. The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in that directory and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
 | `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op at the Model picker or with no instance). Refused while a task is active or queued. |

@@ -2,7 +2,8 @@
 // exceeds hand-rolled VT support, and raw PTY history is not the visible screen.
 import headless from '@xterm/headless';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
-import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR } from './markers.ts';
+import { COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, PICKER_TITLE, PRICE_REGEX, STATUS_SEPARATOR } from './markers.ts';
+import { recognizeScreen } from './signatures.ts';
 
 const { Terminal } = headless;
 
@@ -42,7 +43,9 @@ export interface ScreenVerdict {
   continueScreen: boolean;
 }
 
-/** Minutes left in the Hour session from the Countdown line, or null. `m:ss left` floors. */
+/** Minutes left in the Hour session from the Countdown line, or null. `m:ss left` floors.
+ *  Null is "time left unknown", never zero: the Bind lock enforces only on minutes it
+ *  has proven (issue #30; story 10 of #25). */
 export const countdownMinutes = (text: string): number | null => {
   const match = COUNTDOWN_REGEX.exec(text);
   if (match === null) return null;
@@ -53,7 +56,8 @@ export const countdownMinutes = (text: string): number | null => {
 };
 
 /** Model observed on the ready status line (`GLM 5.3 Flash · 58m left · 12.8K (1%)`): the
- *  segment before the first `·` on the line carrying the Countdown; null when absent. */
+ *  segment before the first `·` on the line carrying the Countdown. Null — including a
+ *  drifted, empty first segment — reports no active model and never guesses one. */
 export const statusModel = (text: string): string | null => {
   const line = text.split('\n').find((candidate) => COUNTDOWN_REGEX.test(candidate) && candidate.includes(STATUS_SEPARATOR));
   if (line === undefined) return null;
@@ -61,7 +65,9 @@ export const statusModel = (text: string): string | null => {
   return model === '' ? null : model;
 };
 
-/** Picker rows after the title: a name line, then its `<n> Freebucks/hr` price line. */
+/** Picker rows after the title: a name line, then its `<n> Freebucks/hr` price line.
+ *  No parseable rows → [], and the pick rule then Enters the highlighted row — what
+ *  freebuff itself would do (Fallback Enter; story 9 of #25) — never a wrong pick. */
 const pickerEntries = (lines: string[]): PickerEntry[] => {
   const title = lines.findIndex((line) => line.includes(PICKER_TITLE));
   if (title === -1) return [];
@@ -84,17 +90,26 @@ const pickerEntries = (lines: string[]): PickerEntry[] => {
 };
 
 export function classifyScreen(text: string, expectedDir?: string): ScreenVerdict {
+  // Issue #30: the classifier reads the recognized screen from the recognition function
+  // instead of re-testing literals; recognition is tolerant (priority, regions,
+  // thresholds), the parsing below stays strict and fails safely per field.
+  const recognized = recognizeScreen(text).screen;
   const lines = text.split('\n');
-  const connecting = CONNECTING_REGEX.test(text);
-  const ready = text.includes(READY_PROMPT) && !connecting;
+  const connecting = recognized === 'connecting';
+  const ready = recognized === 'ready';
 
+  // A recognized Model picker whose rows fail to parse stays the picker — degraded to
+  // 'collapsed' once fewer than two rows render — so the settle loop still reaches the
+  // pick rule and its safe fallback instead of timing out on a drifted picker.
   let picker: ScreenVerdict['picker'] = null;
-  const title = lines.findIndex((line) => line.includes(PICKER_TITLE));
-  if (title !== -1) {
-    const rows = lines.slice(title + 1).filter((line) => line.trim() !== '');
-    picker = rows.length >= 2 ? 'expanded' : rows.length === 1 ? 'collapsed' : null;
+  if (recognized === 'Model picker') {
+    const title = lines.findIndex((line) => line.includes(PICKER_TITLE));
+    const rows = title === -1 ? [] : lines.slice(title + 1).filter((line) => line.trim() !== '');
+    picker = rows.length >= 2 ? 'expanded' : 'collapsed';
   }
 
+  // Strict banner parse: ready without the expected dir line yields null and the
+  // Driver fails dir_mismatch rather than working in the wrong directory.
   const banner = expectedDir !== undefined && lines.some((line) => line.includes(expectedDir)) ? expectedDir : null;
   const balance = FREEBUCKS_BALANCE_REGEX.exec(text);
   const left = FREEBUCKS_LEFT_REGEX.exec(text);
@@ -105,10 +120,12 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
     banner,
     entries: pickerEntries(lines),
     activeModel: statusModel(text),
+    // Missing balance is null, and null keeps the pick rule on its safe default: the
+    // deepseek candidate is skipped because affordability cannot be proven (story 11 of #25).
     freebucksBalance: balance !== null ? Number(balance[1]) : left !== null ? Number(left[1]) : null,
     freebucksDaily: balance !== null ? Number(balance[2]) : null,
     countdownMinutes: countdownMinutes(text),
-    continueScreen: text.includes(SESSION_ENDED) && text.includes(CONTINUE_PROMPT),
+    continueScreen: recognized === 'Continue',
   };
 }
 

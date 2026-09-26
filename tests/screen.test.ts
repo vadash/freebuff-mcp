@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
+import { pickModelIndex } from '../src/driver.ts';
 import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeKey, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
@@ -109,6 +110,60 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
     expect(countdownMinutes('resets in 9h 12m')).toBeNull();
     expect(countdownMinutes('working · 3s · ■ Esc')).toBeNull();
     expect(countdownMinutes('')).toBeNull();
+  });
+});
+
+// Issue #30 (Testing Decisions): one test per parsed field, with that field removed
+// from a real fixture; every fallback must be safe — recognition is tolerant, parsing
+// stays strict and a missing field degrades to the action freebuff itself would take,
+// never a wrong action.
+describe('safe parsing fallbacks (issue #30)', () => {
+  const withoutLinesContaining = async (name: string, ...fragments: string[]): Promise<string> => {
+    const text = await screen(name);
+    return text.split('\n').filter((line) => !fragments.some((fragment) => line.includes(fragment))).join('\n');
+  };
+
+  it('picker rows missing: no entries, the pick rule Enters the highlighted row', async () => {
+    const parsed = classifyScreen(await withoutLinesContaining('0.0.199/picker-expanded.ansi', 'GLM 5.3 Flash', 'Freebucks/hr'));
+    expect(parsed.picker).not.toBeNull();
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.freebucksBalance).toBe(25);
+    expect(pickModelIndex(parsed.entries, parsed.freebucksBalance)).toBe(0);
+  });
+
+  it('balance missing: the pick rule keeps its safe default and never picks an unproven deepseek', async () => {
+    const parsed = classifyScreen(await withoutLinesContaining('0.0.193/picker-expanded.ansi', 'Freebucks daily'));
+    expect(parsed.freebucksBalance).toBeNull();
+    expect(parsed.freebucksDaily).toBeNull();
+    const deepseek = parsed.entries.findIndex((entry) => entry.name.toLowerCase().includes('deepseek'));
+    expect(deepseek).toBeGreaterThanOrEqual(0);
+    expect(pickModelIndex(parsed.entries, parsed.freebucksBalance)).not.toBe(deepseek);
+    expect(pickModelIndex(parsed.entries, parsed.freebucksBalance)).toBe(parsed.entries.findIndex((entry) => entry.name.toLowerCase().includes('glm')));
+  });
+
+  it('countdown missing: minutes left unknown, never zero', async () => {
+    const parsed = classifyScreen(await withoutLinesContaining('0.0.199/ready.ansi', '58m left'));
+    expect(parsed.ready).toBe(true);
+    expect(parsed.countdownMinutes).toBeNull();
+  });
+
+  it('status-line model missing: no active model reported, the Countdown still parses', async () => {
+    const parsed = classifyScreen((await screen('0.0.199/ready.ansi')).replace(' GLM 5.3 Flash', ''));
+    expect(parsed.countdownMinutes).toBe(58);
+    expect(parsed.activeModel).toBeNull();
+  });
+
+  it('banner missing on ready: no banner, which fails the Driver dir_mismatch check', async () => {
+    const parsed = classifyScreen(await withoutLinesContaining('synthetic/banner-ready.ansi', 'C:/work/demo-app'), 'C:/work/demo-app');
+    expect(parsed.ready).toBe(true);
+    expect(parsed.banner).toBeNull();
+  });
+
+  it('reads the recognized screen: a dialog over the picker is the dialog, never a picker', async () => {
+    const parsed = classifyScreen(await screen('synthetic/dialog-over-picker.ansi'));
+    expect(parsed.ready).toBe(false);
+    expect(parsed.picker).toBeNull();
+    expect(parsed.continueScreen).toBe(false);
   });
 });
 
