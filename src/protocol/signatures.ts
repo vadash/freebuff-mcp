@@ -54,9 +54,16 @@ const bottomRegion = (text: string, count: number): string => {
 
 // Escapes wording for a literal match; words may be separated by any whitespace run,
 // including the row wrap a narrow terminal produces inside a phrase.
-const escapeWord = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeWord = (word: string): string => word.replace(/[.*+?${}()|[\]\\]/g, '\\$&');
 const tolerant = (wordings: string[]): RegExp =>
   new RegExp(`(?:${wordings.map((wording) => wording.trim().split(/\s+/).map(escapeWord).join('\\s+')).join('|')})`, 'i');
+
+// Regex-sourced Markers keep the parser's strict regexes strict: as Markers they match
+// case-insensitively and whitespace-tolerantly (a literal space accepts any whitespace
+// run), so one reworded case or row wrap is not Drift. Weak Markers alone still
+// recognize nothing (the strong-Marker gate).
+const marker = (pattern: RegExp): RegExp =>
+  new RegExp(pattern.source.replace(/ /g, '\\s+'), pattern.flags.includes('i') ? pattern.flags : `${pattern.flags}i`);
 
 // Priority order. The Session-in-use dialog renders over the Model picker (sharing its
 // `H · History` hint row) and connecting renders over the ready input box, so the
@@ -102,8 +109,8 @@ const SIGNATURES: ScreenSignature[] = [
     threshold: 1,
     markers: [
       { name: 'PICKER_TITLE', pattern: tolerant([PICKER_TITLE]), strong: true },
-      { name: 'PRICE_REGEX', pattern: PRICE_REGEX, strong: false },
-      { name: 'FREEBUCKS_BALANCE_REGEX', pattern: FREEBUCKS_BALANCE_REGEX, strong: false },
+      { name: 'PRICE_REGEX', pattern: marker(PRICE_REGEX), strong: false },
+      { name: 'FREEBUCKS_BALANCE_REGEX', pattern: marker(FREEBUCKS_BALANCE_REGEX), strong: false },
     ],
   },
   {
@@ -112,7 +119,7 @@ const SIGNATURES: ScreenSignature[] = [
     threshold: 1,
     markers: [
       { name: 'READY_PROMPT', pattern: tolerant([READY_PROMPT]), strong: true },
-      { name: 'COUNTDOWN_REGEX', pattern: COUNTDOWN_REGEX, strong: false },
+      { name: 'COUNTDOWN_REGEX', pattern: marker(COUNTDOWN_REGEX), strong: false },
     ],
   },
 ];

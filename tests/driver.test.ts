@@ -59,6 +59,13 @@ describe('FreebuffDriver', () => {
     await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'process_exited' });
   }, 30_000);
 
+  // Issue #30: the strict banner parse — a ready screen whose dir line shows a
+  // foreign directory fails dir_mismatch instead of working in the wrong directory.
+  it('rejects dir_mismatch when the ready screen shows a foreign directory', async () => {
+    const { driver, dir } = harness('happy', undefined, { stubEnv: { FREEBUFF_STUB_CWD: 'C:\\elsewhere' } });
+    await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'dir_mismatch' });
+  }, 30_000);
+
   it('exposes needsLogin and rejects with needs_login when the TUI demands a login', async () => {
     const { driver, dir } = harness('needs-login');
     await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'needs_login' });

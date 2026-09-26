@@ -64,6 +64,8 @@ freebuff instance survives it.
 | `freebucksDaily` | Freebucks line from the screen, as text |
 | `needsLogin` | freebuff demands `freebuff login` |
 | `updatePending` | A newer freebuff CLI is installed than the one running |
+| `screenDrift` | The installed CLI version has an unknown or degraded Screen on record (a Screen dump) while the fixture corpus has no folder for that version; clears when an update changes the installed version or a dump is promoted into the corpus |
+| `instancePid` | OS pid of the running freebuff Instance, or `null` |
 
 ### Failures
 
@@ -100,14 +102,17 @@ Set `FREEBUFF_ERROR_LOG` in the supervisor's environment to write it elsewhere.
 
 ### Screen dumps
 
-While starting a task or binding, a screen that matches no known state (Model
-picker, ready, Continue screen, session-in-use dialog, login gate, connecting)
-is saved under `<configDir>\screen-dumps\<version>\<hash>.ansi`. `<version>` is
+While starting a task or binding, a screen that matches no known state, or one
+whose Screen signature is only **degraded** (threshold met, a Marker missing —
+Drift has started), is saved under
+`<configDir>\screen-dumps\<version>\<hash>.ansi`. `<version>` is
 the installed CLI version from freebuff's metadata file, `unknown` if that file
 cannot be read; `<hash>` is the SHA-256 of the screen with its Countdown and
 Freebucks lines stripped, so a ticking countdown repaints to the same file (the
-file itself keeps those lines). Dumps are for later analysis only: nothing
-reads them back.
+file itself keeps those lines). Dumps are the record behind the `screenDrift`
+flag: fixing the drift mostly means promoting a dump into the fixture corpus
+(`tests/fixtures/screen/`). They are for later analysis only: nothing reads them
+back.
 
 ## How freebuff's usage works
 

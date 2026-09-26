@@ -155,8 +155,8 @@ stopped ──bind──► spawning ──► picker ──Task arrives, model 
 - `busy`: a Task's Turn is running.
 
 Flags reported by `status` alongside the state: `needsLogin` (freebuff demands
-`freebuff login`, never retried automatically), `screenDrift` (the running CLI
+`freebuff login`, never retried automatically), `screenDrift` (the installed CLI
 version has an unknown or degraded Screen on record — a Screen dump — while the
-fixture corpus does not cover that version yet; clears when a different version
-runs, or when a dump is promoted into a corpus folder for the version) and
-`updatePending` (a newer CLI is installed than the running Instance).
+fixture corpus does not cover that version yet; clears when an update changes the
+installed version, or when a dump is promoted into a corpus folder for the
+version) and `updatePending` (a newer CLI is installed than the running Instance).

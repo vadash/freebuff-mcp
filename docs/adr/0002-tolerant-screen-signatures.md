@@ -1,6 +1,6 @@
 # ADR-0002: Tolerant Screen signatures with an accumulating fixture corpus
 
-- **Status:** Accepted (2026-09-26). Decided in issue #25; implemented by #26–#29.
+- **Status:** Accepted (2026-09-26). Decided in issue #25; implemented by #26–#32.
 
 ## Context
 
@@ -72,3 +72,13 @@ because a version shipped.
   here.
 - A loosened signature that starts matching the wrong screen fails a corpus test
   (the negative fixtures) instead of misreading screens live.
+- The Drift record is keyed by the **installed** CLI version (freebuff's metadata
+  file — the same key the dump writer and the corpus folders use), not the banner
+  would-be "running" version: real captured screens display no parseable version
+  banner, so the installed version is the only version observable exactly when
+  degraded and unknown frames must be recorded. The signal clears when an update
+  changes the installed version, or when a dump is promoted into a corpus folder
+  for the version.
+- The corpus folder names are re-read live on every `status`, not once at startup:
+  promoting a dump into the corpus clears the signal without a supervisor restart
+  (user story 18).

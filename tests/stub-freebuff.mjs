@@ -41,6 +41,9 @@ const CLEAR = '\x1b[2J\x1b[H';
 
 const args = process.argv.slice(2);
 const cwd = args[args.indexOf('--cwd') + 1];
+// Issue #30: renders a foreign directory in the screen's dir line, so tests see the
+// strict banner parse fail dir_mismatch (`FREEBUFF_STUB_CWD`).
+const cwdLine = process.env.FREEBUFF_STUB_CWD ?? cwd;
 const mode = process.env.FREEBUFF_STUB_MODE ?? 'happy';
 const configDir = process.env.FREEBUFF_CONFIG_DIR;
 const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
@@ -116,7 +119,7 @@ const pickerScreen = () => {
   // The 0.0.198-era synthetic hint row is gone: the captured fixture renders the
   // `H · History` row itself, and the stub replays it verbatim.
   const body = rows.map((line) => line.replace(BALANCE_LINE, `FREE · ${balanceLeft}/${balanceDaily} Freebucks daily`));
-  return CLEAR + crlf([bannerLine, cwd, ...body].join('\n'));
+  return CLEAR + crlf([bannerLine, cwdLine, ...body].join('\n'));
 };
 
 const continueScreen = () => CLEAR + crlf(fixture('continue.ansi'));
@@ -139,7 +142,7 @@ const driftDialogScreen = () =>
 // dedupe is exercised: repaints collapse to one dump file that still keeps the Countdown.
 const UNKNOWN_TITLE = 'Quantum flux calibration panel';
 const unknownScreen = () =>
-  CLEAR + crlf([bannerLine, cwd, '─'.repeat(60), `  ${UNKNOWN_TITLE}`, `  Sync window: ${countdownText(countdownMin)}`, '  Await further instructions.', '─'.repeat(60), ''].join('\n'));
+  CLEAR + crlf([bannerLine, cwdLine, '─'.repeat(60), `  ${UNKNOWN_TITLE}`, `  Sync window: ${countdownText(countdownMin)}`, '  Await further instructions.', '─'.repeat(60), ''].join('\n'));
 
 // Ready input box with the Hour-session status line, in the captured wording.
 const readyScreen = () => {
@@ -149,7 +152,7 @@ const readyScreen = () => {
   return CLEAR + crlf(
     [
       bannerLine,
-      cwd,
+      cwdLine,
       statusLine,
       '╭' + '─'.repeat(94) + '╮',
       '│'.padEnd(95) + '│',
@@ -380,7 +383,7 @@ if (mode === 'unknown') {
   // banner-only frame matches no signature, and a settle poll catching it under load
   // would dump a second file (issue #31; same rule as the unknown mode above).
   if (mode !== 'drift') {
-    out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
+    out(CLEAR + bannerLine + '\r\n' + cwdLine + '\r\n');
     await sleep(80);
   }
   if (mode === 'needs-login') {
