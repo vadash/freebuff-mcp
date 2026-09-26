@@ -232,6 +232,16 @@ describe('freezeKey', () => {
     expect(freezeKey(drifted)).toBe(freezeKey(ready));
   });
 
+  // The mid-Turn status line ticks elapsed seconds; a per-second key change would
+  // blind the Watchdog's freeze check for every hung Turn.
+  it('ignores the ticking mid-Turn status line', async () => {
+    const midTurn = await screen('negative/mid-turn-esc.ansi');
+    expect(COUNTDOWN_REGEX.test(midTurn)).toBe(false);
+    const ticked = midTurn.replace('working · 3s ·', 'working · 4s ·');
+    expect(ticked).not.toBe(midTurn);
+    expect(freezeKey(ticked)).toBe(freezeKey(midTurn));
+  });
+
   it('ignores the Freebucks lines on the picker and the Continue screen', async () => {
     const picker = await screen('0.0.199/picker-expanded.ansi');
     expect(freezeKey(picker.replace(/\d+\/(\d+) Freebucks daily/, '3/$1 Freebucks daily'))).toBe(freezeKey(picker));
