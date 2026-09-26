@@ -9,6 +9,8 @@ export const PASTE_THRESHOLD_BYTES = 64 * 1024;
 export const STOP_GRACE_MS = 2_000;
 export const STOP_TIMEOUT_MS = 5_000;
 export const PICKER_REENTER_MS = 3_000;
+// Issue #23: Enter fallback after this much continuously unrecognized Screen.
+export const UNKNOWN_SCREEN_FALLBACK_MS = 10_000;
 export const FREEZE_THRESHOLD_MINUTES = 3;
 export const FREEZE_THRESHOLD_MS = FREEZE_THRESHOLD_MINUTES * 60_000;
 export const FREEZE_POLL_MAX_MS = 1_000;

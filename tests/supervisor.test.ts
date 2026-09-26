@@ -6,7 +6,7 @@ import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
 import { READY_PROMPT } from '../src/protocol/markers.ts';
 import { sleep } from '../src/util.ts';
 import { Supervisor, type SupervisorResponse } from '../src/supervisor.ts';
-import { errorLogPath, expectExit, makeDirs, pollStatus, startSupervisor, stubPath, stubPickerRows, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { errorLogPath, expectExit, makeDirs, pollStatus, readStubInputs, startSupervisor, stubPath, stubPickerRows, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type StubInput, type SupervisorProcess } from './helpers/harness.ts';
 
 let pipeName = '';
 let proc: SupervisorProcess | null = null;
@@ -17,14 +17,12 @@ const boot = (mode: string, extra: Partial<HarnessOptions> = {}): void => {
 };
 
 // Issue #18: what the stub received, from FREEBUFF_STUB_INPUT_LOG.
-type StubInput = { event: 'spawn'; pid: number } | { event: 'paste' | 'submit'; text: string };
 const inputLogPath = (): string => join(dirs.configDir, 'stub-input.jsonl');
-const stubInputs = (): StubInput[] =>
-  existsSync(inputLogPath())
-    ? readFileSync(inputLogPath(), 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as StubInput)
-    : [];
-const inputsOf = (event: StubInput['event']): StubInput[] => stubInputs().filter((entry) => entry.event === event);
-const textsOf = (event: 'paste' | 'submit'): string[] => inputsOf(event).map((entry) => (entry as { text: string }).text);
+const inputsOf = (event: StubInput['event']): StubInput[] => readStubInputs(inputLogPath()).filter((entry) => entry.event === event);
+const textsOf = (event: 'paste' | 'submit'): string[] =>
+  readStubInputs(inputLogPath())
+    .filter((entry): entry is Extract<StubInput, { text: string }> => entry.event === event)
+    .map((entry) => entry.text);
 
 const chatsRoot = (taskDir: string): string => join(dirs.configDir, 'projects', basename(taskDir), 'chats');
 
@@ -141,6 +139,27 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(dumps).toHaveLength(1);
     expect(readFileSync(join(versionDir, dumps[0]!), 'utf8')).toContain('Quantum flux calibration panel');
   }, 30_000);
+
+  // Issue #23: the fallback Enter on the unrecognized screen flips the stub to ready,
+  // so bind and run_prompt complete end-to-end; the dump is still written exactly once.
+  it('completes run_prompt on the unknown screen via one fallback Enter', async () => {
+    writeFileSync(join(dirs.configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.231' }));
+    boot('unknown', { readyMs: 20_000, stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
+    await waitForPipe(pipeName, 10_000);
+    expect(await requestPipe(pipeName, { op: 'bind', dir: dirs.taskDir }, 30_000)).toMatchObject({ ok: true, kind: 'ok' });
+    await pollStatus(pipeName, { state: 'ready' });
+    const run = await requestPipe<Record<string, unknown>>(
+      pipeName,
+      { op: 'run_prompt', dir: dirs.taskDir, prompt: 'fallback task' },
+      30_000,
+    );
+    expect(run).toMatchObject({ ok: true, answer: 'stub(DeepSeek V4.1 Flash): fallback task' });
+    await pollStatus(pipeName, { state: 'ready' });
+    // One Enter total: the fallback stopped once a recognized screen appeared.
+    expect(inputsOf('enter')).toHaveLength(1);
+    const versionDir = join(dirs.configDir, 'screen-dumps', '0.0.231');
+    expect(readdirSync(versionDir)).toHaveLength(1);
+  }, 60_000);
 
   it('spawns at bind, lands at the picker, and idles at ready after each task without respawning', async () => {
     boot('happy');

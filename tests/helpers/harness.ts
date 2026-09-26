@@ -1,10 +1,11 @@
 import { fork, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
+import { z } from 'zod';
 import { requestPipe } from '../../src/ipc.ts';
 import { sleep } from '../../src/util.ts';
 import { insertHintRow } from './picker-rows.mjs';
@@ -139,3 +140,22 @@ export const trimRows = (text: string): string => text.replace(/[ \t]+$/gm, '').
 // tail of the stub's picker Screen until the capture refresh (slice 5).
 export const stubPickerRows = (): string =>
   insertHintRow(readFileSync(new URL('../fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '').split('\n')).join('\n');
+
+// Issues #18/#23: what the stub received, from FREEBUFF_STUB_INPUT_LOG — each spawn,
+// each bracketed paste, each submitted line, and each screen-changing Enter.
+const StubInputLine = z.discriminatedUnion('event', [
+  z.object({ event: z.literal('spawn'), pid: z.number() }),
+  z.object({ event: z.literal('paste'), text: z.string() }),
+  z.object({ event: z.literal('submit'), text: z.string() }),
+  z.object({ event: z.literal('enter') }),
+]);
+
+export type StubInput = z.infer<typeof StubInputLine>;
+
+export const readStubInputs = (logPath: string): StubInput[] =>
+  existsSync(logPath)
+    ? readFileSync(logPath, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => StubInputLine.parse(JSON.parse(line)))
+    : [];

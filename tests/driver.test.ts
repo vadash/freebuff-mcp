@@ -6,9 +6,14 @@ import { describe, expect, it } from 'vitest';
 import { FreebuffDriver } from '../src/driver.ts';
 import { CONTINUE_PROMPT, COUNTDOWN_REGEX } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
+import { readStubInputs, type StubInput } from './helpers/harness.ts';
 import { sleep } from '../src/util.ts';
 
 const stub = fileURLToPath(new URL('./stub-freebuff.mjs', import.meta.url));
+
+// Issue #18/#23: what the stub received, from FREEBUFF_STUB_INPUT_LOG.
+const inputEvents = (logDir: string, event: StubInput['event']): StubInput[] =>
+  readStubInputs(join(logDir, 'stub-input.jsonl')).filter((entry) => entry.event === event);
 
 const harness = (
   mode: string,
@@ -149,4 +154,47 @@ describe('FreebuffDriver', () => {
     await expect(driver.runTask(dir, 'hello')).rejects.toMatchObject({ reason: 'ready_timeout' });
     expect(readdirSync(join(configDir, 'screen-dumps', 'unknown'))).toHaveLength(1);
   }, 30_000);
+
+  // Issue #23: after ~10 s of continuously unrecognized Screen the fallback Enter flips
+  // the stub to ready, and the Task completes instead of timing out; the dump is still
+  // written exactly once and the fallback stops at the recognized ready screen.
+  it('falls back to one Enter on a continuously unrecognized screen and completes the task', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'freebuff-input-'));
+    const { driver, dir, configDir } = harness('unknown', { readyMs: 20_000 }, {
+      stubEnv: { FREEBUFF_STUB_INPUT_LOG: join(logDir, 'stub-input.jsonl') },
+    });
+    writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.231' }));
+    const started = Date.now();
+    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello');
+    const elapsed = Date.now() - started;
+    // The first fallback Enter lands after ~10 s of unknown Screen, not at the 3 s
+    // throttle floor, and long before the 20 s ready deadline.
+    expect(elapsed).toBeGreaterThanOrEqual(9_000);
+    expect(elapsed).toBeLessThan(20_000);
+    // Exactly one Enter: the fallback stopped once the ready screen was recognized.
+    expect(inputEvents(logDir, 'enter')).toHaveLength(1);
+    expect(inputEvents(logDir, 'paste')).toHaveLength(1);
+    const versionDir = join(configDir, 'screen-dumps', '0.0.231');
+    const dumps = readdirSync(versionDir);
+    expect(dumps).toHaveLength(1);
+    expect(readFileSync(join(versionDir, dumps[0]!), 'utf8')).toContain('Quantum flux calibration panel');
+  }, 45_000);
+
+  // Issue #23: the fallback re-fires at most once per ~10 s window while the screen
+  // stays unrecognized — the 3 s enter throttle is a floor, never the cadence.
+  it('re-fires the fallback Enter only after another ~10 s of unrecognized screen', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'freebuff-input-'));
+    const { driver, dir } = harness('unknown', { readyMs: 16_000 }, {
+      stubEnv: {
+        FREEBUFF_STUB_INPUT_LOG: join(logDir, 'stub-input.jsonl'),
+        // Swallow the first fallback Enter so the cadence is observable.
+        FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER: '1',
+      },
+    });
+    const started = Date.now();
+    await expect(driver.runTask(dir, 'hello')).rejects.toMatchObject({ reason: 'ready_timeout' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(15_000);
+    // Exactly one Enter in the 16 s window: none before ~10 s, none on a 3 s cadence.
+    expect(inputEvents(logDir, 'enter')).toHaveLength(1);
+  }, 45_000);
 });

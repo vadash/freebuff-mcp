@@ -8,7 +8,7 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
+import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, PICKER_REENTER_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS, UNKNOWN_SCREEN_FALLBACK_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
 import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, METADATA_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, SCREEN_DUMPS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
@@ -340,13 +340,17 @@ export class FreebuffDriver {
   private async waitSettled(instance: LiveInstance, assertAlive: () => void, idle: boolean): Promise<'picker' | 'ready'> {
     const { pty, screen, dir } = instance;
     const deadline = Date.now() + this.readyMs;
-    let lastPickerEnterAt = 0;
+    let lastEnterAt = 0;
     let continuePressed = false;
-    // The single-instance dialog clears on ENTER; throttle the re-entries.
-    const pressEnterWhenBlocked = (blocked: boolean): boolean => {
-      if (!blocked || Date.now() - lastPickerEnterAt <= PICKER_REENTER_MS) return false;
+    // Issue #23: start of the current stretch of continuously unrecognized Screen.
+    let unknownSince: number | null = null;
+    // One throttle for every unsolicited Enter: the single-instance dialog's
+    // re-entries, the picker pick, and the issue #23 unknown-screen fallback.
+    const pressEnterThrottled = (): boolean => {
+      const now = Date.now();
+      if (now - lastEnterAt <= PICKER_REENTER_MS) return false;
       pty.write('\r');
-      lastPickerEnterAt = Date.now();
+      lastEnterAt = now;
       return true;
     };
     while (Date.now() < deadline) {
@@ -356,12 +360,27 @@ export class FreebuffDriver {
         this.loginRequired = true;
         throw new FreebuffDriverError('needs_login');
       }
-      if (pressEnterWhenBlocked(mentionsSingleInstance(text))) {
+      if (mentionsSingleInstance(text)) {
+        // The single-instance dialog clears on ENTER, and any dialog frame is a
+        // recognized screen: seeing it stops any running unknown-screen fallback.
+        unknownSince = null;
+        pressEnterThrottled();
         await sleep(POLL_MS);
         continue;
       }
       const verdict = classifyScreen(text, dir);
-      if (!isKnownScreen(verdict, text)) this.dumpUnknownScreen(text);
+      if (!isKnownScreen(verdict, text)) {
+        this.dumpUnknownScreen(text);
+        // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
+        // and let the loop re-evaluate; any recognized screen restarts the wait.
+        const now = Date.now();
+        if (unknownSince === null) unknownSince = now;
+        if (now - unknownSince >= UNKNOWN_SCREEN_FALLBACK_MS && pressEnterThrottled()) unknownSince = now;
+      } else if (text.trim() !== '') {
+        // A blank frame is a paint transition (ConPTY emits transient blanks between
+        // repaints), not a recognized screen: it neither starts nor resets the wait.
+        unknownSince = null;
+      }
       if (verdict.ready) {
         if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
         this.loginRequired = false;
@@ -380,9 +399,9 @@ export class FreebuffDriver {
         await sleep(POLL_MS);
       } else if (verdict.picker !== null) {
         // ADR-0001 #6: pick the model by rule instead of taking the top row.
-        if (Date.now() - lastPickerEnterAt > PICKER_REENTER_MS) {
+        if (Date.now() - lastEnterAt > PICKER_REENTER_MS) {
           await this.pickModel(pty, verdict);
-          lastPickerEnterAt = Date.now();
+          lastEnterAt = Date.now();
         }
       }
       await sleep(POLL_MS);

@@ -96,6 +96,15 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 - **Error log**: Screen lines matching the known error Markers seen during a
   Turn, appended with a timestamp and the Bound directory, once per Turn. Never
   acted on.
+- **Screen dump**: an unrecognized Screen saved as
+  `<configDir>/screen-dumps/<version>/<hash>.ansi` while the settle loop waits.
+  The hash is the freeze signature, so Countdown repaints dedupe to one file.
+  Write-only diagnostics; drift shows up as data, not as failed Tasks.
+- **Fallback pick**: after ~10 s of continuously unrecognized Screen the
+  Driver presses Enter (the 3 s enter throttle is the floor, not the cadence)
+  and re-evaluates; any recognized screen stops it. Accepted cost: Enter at a
+  Model picker starts an Hour session on the highlighted/last-session model.
+  Session-in-use takeover stays unconditional.
 
 _Avoid:_ "park", "parked", "parking". The Instance idles; it is never parked,
 and `/end-session` is never sent.

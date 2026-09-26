@@ -16,7 +16,10 @@
 // each bracketed paste and each submitted input line, so tests see exactly what the
 // driver sent. Mode `no-answer` ends the first Turn without a fullResponse. Mode
 // `unknown` (issue #21) boots into a screen matching no known class and repaints it
-// with a ticking Countdown, for the driver's screen-dump tests.
+// with a ticking Countdown, for the driver's screen-dump tests. Enter flips it to the
+// ready screen on the fixture-cursor model (issue #23, the accepted picker cost); the
+// first FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER Enters are swallowed so tests can observe
+// the driver's fallback cadence, and every Enter lands in the input log.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { insertHintRow } from './helpers/picker-rows.mjs';
@@ -162,6 +165,9 @@ const fixtureCursorName = () => {
 
 let phase = 'picker';
 let pending = '';
+// Issue #23: the unknown screen stands until an accepted Enter flips the stub to ready.
+let unknownStuck = mode === 'unknown';
+let unknownIgnore = Number(process.env.FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER ?? 0);
 let selection = 0;
 let model = 'none';
 let escapeState = 0;
@@ -172,6 +178,14 @@ let chatCounter = 0;
 let newChatRequested = false;
 let lastLogPath = null;
 let expireShown = false;
+
+// Enter at the picker — or at the unknown screen standing in for one (issue #23) —
+// accepts the cursor's model and starts the Hour session.
+const acceptEnter = () => {
+  model = pickerOverride !== null ? (pickerOverride[selection]?.name ?? 'none') : fixtureCursorName();
+  phase = 'ready';
+  out(readyScreen());
+};
 
 const chatsRoot = () => join(configDir, 'projects', projectKey, 'chats');
 
@@ -296,12 +310,19 @@ process.stdin.on('data', (chunk) => {
       pasted += char;
     } else if (char === '\r') {
       // Raw mode delivers Enter as CR; a stray LF must not count as a second Enter.
-      if (phase === 'picker') {
-        model = pickerOverride !== null ? (pickerOverride[selection]?.name ?? 'none') : fixtureCursorName();
-        phase = 'ready';
-        out(readyScreen());
+      if (unknownStuck) {
+        logInput({ event: 'enter' });
+        if (unknownIgnore > 0) unknownIgnore -= 1;
+        else {
+          unknownStuck = false;
+          acceptEnter();
+        }
+      } else if (phase === 'picker') {
+        logInput({ event: 'enter' });
+        acceptEnter();
       } else if (phase === 'continue') {
         // Enter on the Continue screen starts the next Hour session.
+        logInput({ event: 'enter' });
         phase = 'ready';
         out(readyScreen());
       } else {
@@ -321,25 +342,29 @@ out(CONNECTING + ' to agent...\r\n');
 await sleep(80);
 if (mode === 'unknown') {
   // No intermediate banner frame: the first stable screen is already the unknown one,
-  // so a boot produces exactly one dump signature. Repaints tick the Countdown.
+  // so a boot produces exactly one dump signature. Repaints tick the Countdown until
+  // an accepted Enter flips the stub to ready (issue #23); that ready session is the
+  // terminal state, so the normal boot below must not run for this mode.
   out(unknownScreen());
-  for (;;) {
+  while (unknownStuck) {
     await sleep(200);
     countdownMin = Math.max(1, countdownMin - 1);
-    out(unknownScreen());
+    // Never repaint over the ready screen an Enter may just have produced.
+    if (unknownStuck) out(unknownScreen());
   }
-}
-out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
-await sleep(80);
-if (mode === 'needs-login') {
-  out(LOGIN_REQUIRED + '\r\n');
-  for (;;) await sleep(1_000);
-}
-if (sessionAlive) {
-  model = fixtureCursorName();
-  phase = 'ready';
-  out(readyScreen());
 } else {
-  phase = 'picker';
-  out(pickerScreen());
+  out(CLEAR + bannerLine + '\r\n' + cwd + '\r\n');
+  await sleep(80);
+  if (mode === 'needs-login') {
+    out(LOGIN_REQUIRED + '\r\n');
+    for (;;) await sleep(1_000);
+  }
+  if (sessionAlive) {
+    model = fixtureCursorName();
+    phase = 'ready';
+    out(readyScreen());
+  } else {
+    phase = 'picker';
+    out(pickerScreen());
+  }
 }
