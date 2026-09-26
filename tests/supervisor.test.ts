@@ -6,7 +6,7 @@ import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
 import { READY_PROMPT } from '../src/protocol/markers.ts';
 import { sleep } from '../src/util.ts';
 import { Supervisor, type SupervisorResponse } from '../src/supervisor.ts';
-import { errorLogPath, expectExit, makeDirs, pollStatus, startSupervisor, stubPath, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { errorLogPath, expectExit, makeDirs, pollStatus, startSupervisor, stubPath, stubPickerRows, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 
 let pipeName = '';
 let proc: SupervisorProcess | null = null;
@@ -98,11 +98,10 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     await pollStatus(pipeName, { state: 'picker' });
     const atPicker = await requestPipe<{ screen: string }>(pipeName, { op: 'screen' });
     expect(atPicker).toMatchObject({ ok: true, kind: 'screen' });
-    // Pipe seam: the stub replays the captured picker fixture verbatim under its
-    // banner + directory header, and the op hands back exactly that flattened text.
-    const fixture = readFileSync(new URL('./fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8')
-      .replace('\x1b[2J\x1b[H\n', '');
-    expect(trimRows(atPicker.screen).endsWith(trimRows(fixture))).toBe(true);
+    // Pipe seam: the stub replays the captured picker fixture (plus the 0.0.198 hint
+    // row, see stubPickerRows) under its banner + directory header, and the op hands
+    // back exactly that flattened text.
+    expect(trimRows(atPicker.screen).endsWith(trimRows(stubPickerRows()))).toBe(true);
     const task = requestPipe<{ ok: boolean }>(pipeName, { op: 'run_prompt', dir: dirs.taskDir, prompt: 'screen states' }, 30_000);
     await pollStatus(pipeName, { state: 'busy' });
     // Busy is set before the settle loop picks the model; poll until the ready box paints.

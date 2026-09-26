@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
-import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, stubPickerRows, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 import type { ChildProcess } from 'node:child_process';
 
 let pipeName = '';
@@ -209,8 +209,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
     await pollStatus(pipeName, { state: 'picker' });
     const screen = toolText((await c.callTool({ name: 'screen', arguments: {} })) as CallResult);
-    const fixture = readFileSync(new URL('./fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '');
-    expect(trimRows(screen).endsWith(trimRows(fixture))).toBe(true);
+    expect(trimRows(screen).endsWith(trimRows(stubPickerRows()))).toBe(true);
     expect(screen).toContain('Start coding for free');
   }, 30_000);
 

@@ -3,7 +3,8 @@
 // duplicate src/protocol/{markers,chatStore}.ts on purpose so the driver under
 // test is the only side consuming the real modules. The Model picker and the
 // Continue screen replay the real captured fixtures verbatim
-// (tests/fixtures/screen/README.md); FREEBUFF_STUB_COUNTDOWN_MIN,
+// (tests/fixtures/screen/README.md) — the picker plus the 0.0.198 `H · History`
+// hint row the fixture predates; FREEBUFF_STUB_COUNTDOWN_MIN,
 // FREEBUFF_STUB_FREEBUCKS and FREEBUFF_STUB_PICKER override the numbers the
 // protocol reads; FREEBUFF_STUB_SESSION_ALIVE=1 boots into the ready screen of
 // an unexpired Hour session instead of the picker. The displayed model is
@@ -18,6 +19,7 @@
 // with a ticking Countdown, for the driver's screen-dump tests.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { insertHintRow } from './helpers/picker-rows.mjs';
 
 const READY_PROMPT = 'Enter a coding task or / for commands';
 const CONNECTING = 'Connecting';
@@ -102,6 +104,10 @@ const pickerScreen = () => {
       ...lines.slice(balance),
     ];
   }
+  // The 0.0.198 update added the `H · History` hint row above the bottom border
+  // (issue #22); the fixture predates it, so the stub — which stands in for the
+  // current CLI — inserts it (shared transform with the test harness).
+  rows = insertHintRow(rows);
   const body = rows.map((line) => line.replace(BALANCE_LINE, `FREE · ${balanceLeft}/${balanceDaily} Freebucks daily`));
   return CLEAR + crlf([bannerLine, cwd, ...body].join('\n'));
 };

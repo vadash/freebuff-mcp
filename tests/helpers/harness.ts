@@ -1,5 +1,5 @@
 import { fork, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
 import { requestPipe } from '../../src/ipc.ts';
 import { sleep } from '../../src/util.ts';
+import { insertHintRow } from './picker-rows.mjs';
 
 export const stubPath = fileURLToPath(new URL('../stub-freebuff.mjs', import.meta.url));
 export const supervisorEntry = fileURLToPath(new URL('../../src/supervisor.ts', import.meta.url));
@@ -132,3 +133,9 @@ export const answerOf = (result: { content: Array<{ type: string; text?: string 
 // ConPTY repaints pad rows to the full terminal width; captured fixtures keep trailing
 // padding trimmed. Screens and fixtures only compare equal row-by-row right-trimmed.
 export const trimRows = (text: string): string => text.replace(/[ \t]+$/gm, '').replace(/\n+$/, '');
+
+// The stub stands in for the current CLI: the captured 0.0.193 picker fixture plus the
+// 0.0.198 `H · History` hint row (see picker-rows.mjs, issue #22). This is the expected
+// tail of the stub's picker Screen until the capture refresh (slice 5).
+export const stubPickerRows = (): string =>
+  insertHintRow(readFileSync(new URL('../fixtures/screen/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '').split('\n')).join('\n');

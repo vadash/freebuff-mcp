@@ -41,6 +41,11 @@ Exact strings the protocol depends on:
 - Cursor: the highlighted row is prefixed `›` in the flattened text
 - Expanded state ends in `↑  Show fewer`
 
+Note: this is the 0.0.193 capture. The 0.0.198 update added a `H · History` hint row
+above the bottom border (visible under the dialog in `session-in-use.ansi`);
+`doctor` expects it on the Model picker (issue #22) until the capture refresh (slice 5)
+replaces this fixture.
+
 Notes: the picker is expanded on arrival for a profile that has submitted a prompt before;
 no keyboard path to a collapsed "See all N models" state was found, so there is no real
 collapsed capture. The remembered model holds the cursor, not necessarily the top row.

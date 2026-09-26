@@ -50,7 +50,7 @@ freebuff instance survives it.
 | `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op at the Model picker or with no instance). Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
 | `screen` | none | The running Instance's current Screen, flattened to text — the exact text the supervisor's Driver and Watchdog read. Works in every supervisor state; empty until the Instance first paints. |
-| `doctor` | none | Checks the markers expected on the current screen (picker, ready, Continue, Countdown, Freebucks) against the live screen; returns `{ ok, skipped, failures }`. `skipped` (with `ok: false`) when no idle instance is running. |
+| `doctor` | none | Checks the Markers expected on the current Screen (picker incl. the `H · History` hint row, ready, Continue, Session-in-use dialog, login gate, connecting) against the live Screen; returns `{ ok, skipped, failures }`. `skipped` (with `ok: false`) when no idle instance is running. Advisory: a drift report never blocks a task. |
 
 `status` fields:
 

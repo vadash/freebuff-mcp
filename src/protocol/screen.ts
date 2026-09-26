@@ -2,7 +2,7 @@
 // exceeds hand-rolled VT support, and raw PTY history is not the visible screen.
 import headless from '@xterm/headless';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
-import { CONNECTING, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, LOGIN_REQUIRED, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR, mentionsSingleInstance } from './markers.ts';
+import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, LOGIN_REQUIRED, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, STATUS_SEPARATOR, mentionsSingleInstance } from './markers.ts';
 
 const { Terminal } = headless;
 
@@ -85,7 +85,7 @@ const pickerEntries = (lines: string[]): PickerEntry[] => {
 
 export function classifyScreen(text: string, expectedDir?: string): ScreenVerdict {
   const lines = text.split('\n');
-  const connecting = new RegExp(`\\b${CONNECTING}\\b`, 'i').test(text);
+  const connecting = CONNECTING_REGEX.test(text);
   const ready = text.includes(READY_PROMPT) && !connecting;
 
   let picker: ScreenVerdict['picker'] = null;
