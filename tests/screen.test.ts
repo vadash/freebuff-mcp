@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { COUNTDOWN_REGEX, KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
-import { pickModelIndex } from '../src/driver.ts';
 import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeKey, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
@@ -14,9 +13,8 @@ const screen = async (name: string): Promise<string> => flattenScreen([load(name
 const verdict = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   ready: false,
   connecting: false,
-  picker: null,
+  welcomeScreen: false,
   banner: null,
-  entries: [],
   freebucksBalance: null,
   freebucksDaily: null,
   countdownMinutes: null,
@@ -26,8 +24,10 @@ const verdict = (over: Record<string, unknown> = {}): Record<string, unknown> =>
 });
 
 describe('classifyScreen', () => {
+  // ADR-0004: the model is footer-derived; the pre-0.1.0 screens carried it on the
+  // status line, so the old fixture reports no active model.
   it('reports a ready prompt with the Countdown from the status line', async () => {
-    expect(classifyScreen(await screen('0.0.199/ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
+    expect(classifyScreen(await screen('0.0.199/ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 58 }));
   });
 
   it('reports the connecting spinner even when the prompt is rendered below', async () => {
@@ -51,42 +51,57 @@ describe('classifyScreen', () => {
     expect(classifyScreen(text, expected)).toEqual(verdict({ ready: true, banner: expected }));
     expect(classifyScreen(text, 'C:/elsewhere')).toEqual(verdict({ ready: true }));
   });
-
-  it('sees an expanded model picker', async () => {
-    expect(classifyScreen(await screen('0.0.199/picker-expanded.ansi')).picker).toBe('expanded');
-  });
 });
 
 describe('classifyScreen against the real captured fixtures (issue #11)', () => {
-  // The picker fixture is refreshed by every capture run of its version (issue #32
-  // expands it), so these hold the parse invariants that travel with any refresh —
-  // never the incidental rows or balance of the last capture.
-  it('parses the real picker rows with their displayed prices', async () => {
-    const parsed = classifyScreen(await screen('0.0.199/picker-expanded.ansi'));
-    expect(parsed.entries.length).toBeGreaterThan(0);
-    for (const entry of parsed.entries) {
-      expect(entry.name.trim(), JSON.stringify(entry)).not.toBe('');
-      expect(entry.price).toBeGreaterThanOrEqual(0);
-    }
-  });
-
-  it('extracts the Freebucks balance and daily allowance from the real picker', async () => {
-    const parsed = classifyScreen(await screen('0.0.199/picker-expanded.ansi'));
-    expect(parsed.freebucksBalance).not.toBeNull();
-    expect(parsed.freebucksDaily).toBeGreaterThanOrEqual(parsed.freebucksBalance!);
+  // The Welcome and session fixtures are refreshed by every capture run, so these hold
+  // the parse invariants that travel with any refresh — never the incidental numbers of
+  // the last capture (the remaining balance legitimately drops over a day of use).
+  it('reads the Welcome screen: idle, footer model, balance parsed', async () => {
+    const parsed = classifyScreen(await screen('0.1.0/welcome.ansi'));
+    expect(parsed.welcomeScreen).toBe(true);
+    expect(parsed.ready).toBe(false);
+    expect(parsed.activeModel).toEqual(expect.stringMatching(/.+/));
+    expect(parsed.freebucksBalance).toEqual(expect.any(Number));
+    expect(parsed.freebucksDaily).toEqual(expect.any(Number));
+    expect(parsed.freebucksBalance as number).toBeLessThanOrEqual(parsed.freebucksDaily as number);
     expect(parsed.countdownMinutes).toBeNull();
     expect(parsed.continueScreen).toBe(false);
   });
 
-  it('sees no Continue screen on the picker', async () => {
-    expect(classifyScreen(await screen('0.0.199/picker-expanded.ansi')).continueScreen).toBe(false);
+  it('reads the session screen: ready with Countdown, footer model, remaining balance', async () => {
+    const parsed = classifyScreen(await screen('0.1.0/ready.ansi'));
+    expect(parsed.ready).toBe(true);
+    expect(parsed.welcomeScreen).toBe(false);
+    expect(parsed.activeModel).toEqual(expect.stringMatching(/.+/));
+    expect(parsed.freebucksBalance).toEqual(expect.any(Number));
+    expect(parsed.freebucksDaily).toEqual(expect.any(Number));
+    expect(parsed.freebucksBalance as number).toBeLessThanOrEqual(parsed.freebucksDaily as number);
+    expect(parsed.countdownMinutes as number).toBeGreaterThan(0);
+    expect(parsed.countdownMinutes as number).toBeLessThanOrEqual(60);
+    expect(parsed.continueScreen).toBe(false);
+  });
+
+  it('sees no Continue screen on the Welcome screen', async () => {
+    expect(classifyScreen(await screen('0.1.0/welcome.ansi')).continueScreen).toBe(false);
+  });
+
+  // The post-expiry look (0.1.2): Countdown gone, box back to the Welcome wording,
+  // transcript intact. This is the screen the Supervisor must treat as idle after an
+  // Hour session expires.
+  it('reads the post-expiry look as the Welcome screen with no Countdown', async () => {
+    const parsed = classifyScreen(await screen('0.1.2/welcome-expired.ansi'));
+    expect(parsed.welcomeScreen).toBe(true);
+    expect(parsed.ready).toBe(false);
+    expect(parsed.countdownMinutes).toBeNull();
+    expect(parsed.continueScreen).toBe(false);
   });
 
   it('sees the Continue screen; 0.0.199 no longer shows a remaining balance', async () => {
     const parsed = classifyScreen(await screen('0.0.199/continue.ansi'));
     expect(parsed.continueScreen).toBe(true);
     expect(parsed.ready).toBe(false);
-    expect(parsed.picker).toBeNull();
+    expect(parsed.welcomeScreen).toBe(false);
     expect(parsed.freebucksBalance).toBeNull();
     expect(parsed.freebucksDaily).toBeNull();
     expect(parsed.countdownMinutes).toBeNull();
@@ -111,7 +126,7 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
 
   it('matches the 0.0.198 session-in-use dialog marker against the real capture', async () => {
     expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).ready).toBe(false);
-    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).picker).toBeNull();
+    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).welcomeScreen).toBe(false);
     expect(mentionsSingleInstance(await load('0.0.198/session-in-use.ansi'))).toBe(true);
   });
 
@@ -138,22 +153,11 @@ describe('safe parsing fallbacks (issue #30)', () => {
     return text.split('\n').filter((line) => !fragments.some((fragment) => line.includes(fragment))).join('\n');
   };
 
-  it('picker rows missing: no entries, the pick rule Enters the highlighted row', async () => {
-    const parsed = classifyScreen(await withoutLinesContaining('0.0.199/picker-expanded.ansi', 'GLM 5.3 Flash', 'Freebucks/hr'));
-    expect(parsed.picker).not.toBeNull();
-    expect(parsed.entries).toEqual([]);
-    expect(parsed.freebucksBalance).toBe(25);
-    expect(pickModelIndex(parsed.entries, parsed.freebucksBalance)).toBe(0);
-  });
-
-  it('balance missing: the pick rule keeps its safe default and never picks an unproven deepseek', async () => {
-    const parsed = classifyScreen(await withoutLinesContaining('0.0.193/picker-expanded.ansi', 'Freebucks daily'));
+  it('balance missing on the Welcome screen: no balance, the screen still reads idle', async () => {
+    const parsed = classifyScreen(await withoutLinesContaining('0.1.0/welcome.ansi', 'Freebucks remaining'));
+    expect(parsed.welcomeScreen).toBe(true);
     expect(parsed.freebucksBalance).toBeNull();
     expect(parsed.freebucksDaily).toBeNull();
-    const deepseek = parsed.entries.findIndex((entry) => entry.name.toLowerCase().includes('deepseek'));
-    expect(deepseek).toBeGreaterThanOrEqual(0);
-    expect(pickModelIndex(parsed.entries, parsed.freebucksBalance)).not.toBe(deepseek);
-    expect(pickModelIndex(parsed.entries, parsed.freebucksBalance)).toBe(parsed.entries.findIndex((entry) => entry.name.toLowerCase().includes('glm')));
   });
 
   it('countdown missing: minutes left unknown, never zero', async () => {
@@ -162,9 +166,10 @@ describe('safe parsing fallbacks (issue #30)', () => {
     expect(parsed.countdownMinutes).toBeNull();
   });
 
-  it('status-line model missing: no active model reported, the Countdown still parses', async () => {
-    const parsed = classifyScreen((await screen('0.0.199/ready.ansi')).replace(' GLM 5.3 Flash', ''));
-    expect(parsed.countdownMinutes).toBe(58);
+  it('footer model missing: no active model reported, the Countdown still parses', async () => {
+    const parsed = classifyScreen(await withoutLinesContaining('0.1.0/ready.ansi', '/model to change'));
+    expect(parsed.ready).toBe(true);
+    expect(parsed.countdownMinutes).toBe(60);
     expect(parsed.activeModel).toBeNull();
   });
 
@@ -174,17 +179,17 @@ describe('safe parsing fallbacks (issue #30)', () => {
     expect(parsed.banner).toBeNull();
   });
 
-  it('reads the recognized screen: a dialog over the picker is the dialog, never a picker', async () => {
+  it('reads the recognized screen: a dialog over the Welcome screen is the dialog, never idle', async () => {
     const parsed = classifyScreen(await screen('synthetic/dialog-over-picker.ansi'));
     expect(parsed.ready).toBe(false);
-    expect(parsed.picker).toBeNull();
+    expect(parsed.welcomeScreen).toBe(false);
     expect(parsed.continueScreen).toBe(false);
   });
 });
 
 describe('flattenScreen', () => {
   it('renders chunks through one shared screen', async () => {
-    expect(classifyScreen(await flattenScreen([load('0.0.199/ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 58, activeModel: 'GLM 5.3 Flash' }));
+    expect(classifyScreen(await flattenScreen([load('0.0.199/ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 58 }));
   });
 
   it('reassembles an escape sequence split mid-sequence', async () => {
@@ -250,9 +255,9 @@ describe('freezeKey', () => {
     expect(freezeKey(ticked)).toBe(freezeKey(midTurn));
   });
 
-  it('ignores the Freebucks lines on the picker and the Continue screen', async () => {
-    const picker = await screen('0.0.199/picker-expanded.ansi');
-    expect(freezeKey(picker.replace(/\d+\/(\d+) Freebucks daily/, '3/$1 Freebucks daily'))).toBe(freezeKey(picker));
+  it('ignores the Freebucks lines on the Welcome screen and the Continue screen', async () => {
+    const welcome = await screen('0.1.0/welcome.ansi');
+    expect(freezeKey(welcome.replace(/\d+\/(\d+) Freebucks remaining/, '3/$1 Freebucks remaining'))).toBe(freezeKey(welcome));
     const cont = await screen('0.0.199/continue.ansi');
     expect(freezeKey(cont.replace(/\d+ Freebucks left/, '7 Freebucks left'))).toBe(freezeKey(cont));
   });

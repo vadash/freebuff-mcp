@@ -17,8 +17,8 @@ each screen's wording.
 - `synthetic/`: hand-made emulator test vectors (split writes, repaints,
   scrollback). Not protocol captures.
 
-A file's name names the screen it shows: `ready`, `continue`,
-`picker-expanded` (Model picker), `error` (ready box showing a CLI error),
+A file's name names the screen it shows: `ready`, `continue`, `welcome`
+(Welcome screen), `error` (ready box showing a CLI error),
 `single-instance` / `session-in-use` (the Session-in-use dialog in its
 0.0.193 / 0.0.198+ wording). A new fixture needs that name and a row in the
 corpus test's table.
@@ -57,49 +57,44 @@ unreadable. Raw PTY streams land in `.probe/capture/raw/` (gitignored).
 
 The run also covers:
 
-- **Expanded picker**: presses `v`, waits for the full model list, and only
-  then writes `picker-expanded.ansi`. It then runs the Pick rule against the
-  real rows and fails if the choice is unaffordable.
-- **Concurrent second spawn**: while one Instance holds an Hour session, a
-  second spawn is watched for 120 s. It writes the Session-in-use dialog if
-  one appears, and otherwise records
-  `.probe/capture/raw/second-spawn-no-dialog.txt`.
+- **Welcome or resumed ready**: the boot screen is saved as `welcome` (no Hour
+  session) or `ready` (an unexpired session resumed after a kill), by the
+  Countdown's presence.
 - **Unknown-screen watch**: any stable frame no signature recognizes is dumped
   to `.probe/capture/unknown/` for review. Anything interesting there becomes a
   named fixture.
-
-`FREEBUFF_LOW_CAPTURE=1` (test `captures the low-Freebucks screen`) captures
-the exhausted-balance picker. It only writes on a day whose balance is already
-below 5, because draining the balance means letting paid Hour sessions run
-their full hour.
+- **Expiry**: after a real Hour, `countdown-expiring` (the mm:ss Countdown of
+  the last five minutes) and `welcome-expired` — the 0.1.0 post-expiry look:
+  Countdown gone, box back to `Your first message starts the session`, transcript
+  intact. It must recognize as the Welcome screen; the Supervisor submits the
+  next task straight into it. The wait costs the rest of the hour.
 
 ## What the fixtures can't show
 
-- **Collapsed picker.** 0.0.193's picker was born expanded (four priced rows).
-  0.0.199's is born collapsed to one `GLM 5.3 Flash` row with
-  `↓  See all 5 models`, so `0.0.199/picker-expanded.ansi` is really collapsed.
-  It predates the expanded-picker flow, and `classifyScreen` still reads it as
-  the picker. On that wording the Pick rule lands on GLM and the deepseek
-  affordability gate goes unexercised live; stub tests cover it with
-  synthetic rows.
+- **No model picker.** From 0.1.0 the CLI opens on the Welcome screen and the
+  first message starts the session (ADR-0004). The pick rule, the picker
+  fixtures, and the low-Freebucks capture are gone; `0.0.193`/`0.0.199`
+  `picker-expanded.ansi` fixtures were pruned when the picker recognition was.
 - **No pid record.** From 0.0.198 the CLI writes no
   `freebuff-instance-owner.json` or `freebuff.lock`. The Supervisor recovers
-  with `Take over` and reads the Instance pid from its own PTY. A stale claim
-  (Instance killed mid-session) also raises the dialog. A second spawn while
-  the first sits at the picker shows none, and on 0.0.199 even a concurrent
-  second spawn showed none.
-- **`H · History`** (0.0.198+) is picker furniture, not a Marker. It also
-  renders under the Session-in-use dialog.
+  with `Take over` and reads the Instance pid from its own PTY.
+- **No Session-in-use dialog from 0.1.0.** A concurrent second spawn now takes
+  the Hour session over silently: the first Instance's Countdown vanishes and
+  its box reverts to the Welcome wording. The `single-instance` /
+  `session-in-use` fixtures are older-generation captures; the dialog Markers
+  stay for them.
+- **No Continue screen at plain expiry.** With balance remaining, 0.1.0 expiry
+  just reverts to the Welcome look (captured as `welcome-expired`). The
+  `Press Enter to continue` dialog is the out-of-credits claim check — it
+  cannot be captured while the balance lasts, so `continue.ansi` stays a
+  0.0.193/0.0.199 fixture and the expire-mode tests replay those.
 - **Errors.** A failing shell command during a Turn is not reliably rendered
   as an error, because the model neutralizes it. `error.ansi` therefore holds
   the CLI's own `Command not found: "/…"` rendering.
 - **Countdown near expiry** switches from `<n>m left` to `m:ss left` at exactly
-  5:00 and repaints every second (seen in the 0.0.193 raw stream).
+  5:00 and repaints every second.
 - **Git-root rebind.** Started in a subdirectory of a git repo, freebuff
   announces `You started Freebuff in a subdirectory of a git repo` and rebinds
   to the git root.
-- **No low-Freebucks screen.** There is no low-Freebucks literal. The low
-  state is the balance's left number (`0/25`, `0/40`) falling below a model's
-  price, and no such fixture has been captured yet.
-- **Fallback Enter unexercised live.** The 0.0.199 capture run produced no
+- **Fallback Enter unexercised live.** The 0.1.0 capture run produced no
   unknown dumps, so Fallback Enter has only been exercised by stub tests.

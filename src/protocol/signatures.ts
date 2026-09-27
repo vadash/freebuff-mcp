@@ -4,11 +4,11 @@
 // text against the table. Markers match case-insensitively and whitespace-tolerantly,
 // so one reworded space or case change is not Drift. When two signatures match, the
 // table's order is the fixed priority: Session-in-use dialog > login gate > connecting
-// > Continue > Model picker > ready. Thresholds, regions and strong/weak labels are
+// > Continue > Welcome screen > ready. Thresholds, regions and strong/weak labels are
 // tuned against the fixture corpus (`tests/corpus.test.ts`), the acceptance bar.
-import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, LOGIN_REQUIRED, PICKER_TITLE, PRICE_REGEX, READY_PROMPT, SESSION_ENDED, SINGLE_INSTANCE_MARKERS } from './markers.ts';
+import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, LOGIN_REQUIRED, READY_PROMPT, SINGLE_INSTANCE_MARKERS, WELCOME_BOX } from './markers.ts';
 
-export type KnownScreen = 'Model picker' | 'ready' | 'Continue' | 'Session-in-use dialog' | 'login gate' | 'connecting';
+export type KnownScreen = 'Welcome screen' | 'ready' | 'Continue' | 'Session-in-use dialog' | 'login gate' | 'connecting';
 
 /** pass: every Marker present; degraded: threshold met, some Marker missing (Drift has
  *  started, the missing Markers are named); fail: below threshold. */
@@ -35,7 +35,7 @@ interface ScreenSignature {
   screen: KnownScreen;
   /** The Marker search region: the bottom N rows of the rendered content for the
    *  bottom-anchored screens (dialogs, Continue, ready — their wording never sits in
-   *  the transcript above), or 'all' for the Model picker, login gate and connecting
+   *  the transcript above), or 'all' for the Welcome screen, login gate and connecting
    *  status line. */
   bottomRows: number | 'all';
   threshold: number;
@@ -65,9 +65,12 @@ const tolerant = (wordings: string[]): RegExp =>
 const marker = (pattern: RegExp): RegExp =>
   new RegExp(pattern.source.replace(/ /g, '\\s+'), pattern.flags.includes('i') ? pattern.flags : `${pattern.flags}i`);
 
-// Priority order. The Session-in-use dialog renders over the Model picker (sharing its
+// Priority order. The Session-in-use dialog renders over the idle screens (sharing the
 // `H · History` hint row) and connecting renders over the ready input box, so the
-// overlaid screen always wins; ready, the least specific, is last.
+// overlaid screen always wins. The Welcome screen comes before ready: both carry the
+// ready input box, and only the Welcome screen carries its info-box line — while the
+// Countdown stays a weak Marker, so a drifted wording degrades ready instead of
+// failing it (issue #31).
 const SIGNATURES: ScreenSignature[] = [
   {
     screen: 'Session-in-use dialog',
@@ -95,27 +98,28 @@ const SIGNATURES: ScreenSignature[] = [
     markers: [{ name: 'CONNECTING_REGEX', pattern: CONNECTING_REGEX, strong: true }],
   },
   {
+    // Single strong Marker: 0.1.0 replaced `Session ended` with a credits summary, so
+    // the prompt tail is the one literal both generations share. `Press Enter to
+    // continue` appears nowhere else (issue #22 analysis).
     screen: 'Continue',
     bottomRows: 8,
-    threshold: 2,
-    markers: [
-      { name: 'SESSION_ENDED', pattern: tolerant([SESSION_ENDED]), strong: true },
-      { name: 'CONTINUE_PROMPT', pattern: tolerant([CONTINUE_PROMPT]), strong: true },
-    ],
+    threshold: 1,
+    markers: [{ name: 'CONTINUE_PROMPT', pattern: tolerant([CONTINUE_PROMPT]), strong: true }],
   },
   {
-    screen: 'Model picker',
+    // WELCOME_BOX alone: 0.1.2 dropped the `n/n Freebucks remaining` line from the
+    // Welcome box, so the balance cannot be a Marker here. The parse still reads it
+    // (screen.ts) wherever the line exists — the session screen keeps it.
+    screen: 'Welcome screen',
     bottomRows: 'all',
     threshold: 1,
-    markers: [
-      { name: 'PICKER_TITLE', pattern: tolerant([PICKER_TITLE]), strong: true },
-      { name: 'PRICE_REGEX', pattern: marker(PRICE_REGEX), strong: false },
-      { name: 'FREEBUCKS_BALANCE_REGEX', pattern: marker(FREEBUCKS_BALANCE_REGEX), strong: false },
-    ],
+    markers: [{ name: 'WELCOME_BOX', pattern: tolerant([WELCOME_BOX]), strong: true }],
   },
   {
     screen: 'ready',
-    bottomRows: 6,
+    // The 0.1.0 layout renders two footer lines below the input box (model footer and
+    // the history hint), so the Countdown sits 8 rows up, not 6.
+    bottomRows: 8,
     threshold: 1,
     markers: [
       { name: 'READY_PROMPT', pattern: tolerant([READY_PROMPT]), strong: true },

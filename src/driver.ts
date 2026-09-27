@@ -10,10 +10,10 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS, UNKNOWN_SCREEN_FALLBACK_MS, UNSOLICITED_ENTER_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, DOWN_ARROW, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, VERSION_BANNER_REGEX, mentionsSingleInstance } from './protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, type PickerEntry, type ScreenVerdict } from './protocol/screen.ts';
+import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, mentionsSingleInstance } from './protocol/markers.ts';
+import { CliTerminalScreen, classifyScreen, type ScreenVerdict } from './protocol/screen.ts';
 import { recognizeScreen } from './protocol/signatures.ts';
-import { metadataVersion, writeScreenDump } from './protocol/screenDump.ts';
+import { writeScreenDump } from './protocol/screenDump.ts';
 import { sleep } from './util.ts';
 
 export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login' | 'no_answer';
@@ -66,21 +66,8 @@ const turnBaseline = (snaps: ChatDirSnapshot[]): TurnBaseline => {
   return newest ? { dirName: newest.dirName, logBytes: newest.logBytes } : { dirName: '', logBytes: 0 };
 };
 
-// ADR-0001 #6: first deepseek the balance can afford, else first glm, else first mimo,
-// else the top row. Case-insensitive substring in displayed order; affordability gates
-// only the deepseek candidate. Both parse fallbacks land safe (issue #30): no parseable
-// rows → index 0, one Enter on the highlighted row (Fallback Enter; story 9 of #25); a
-// missing balance skips deepseek, since affordability cannot be proven (story 11 of #25).
-export const pickModelIndex = (entries: PickerEntry[], balance: number | null): number => {
-  const first = (needle: string): number => entries.findIndex((entry) => entry.name.toLowerCase().includes(needle));
-  const deepseek = first('deepseek');
-  if (deepseek !== -1 && balance !== null && balance >= entries[deepseek]!.price) return deepseek;
-  const glm = first('glm');
-  if (glm !== -1) return glm;
-  const mimo = first('mimo');
-  if (mimo !== -1) return mimo;
-  return 0;
-};
+// ADR-0004: no model selection. The supervisor never picks a model and never sends
+// `/model`; the Instance runs whatever model freebuff remembers.
 
 interface LiveInstance {
   pty: IPty;
@@ -128,8 +115,6 @@ export class FreebuffDriver {
     hourSessionMinutesLeft: number | null;
     freebucksBalance: number | null;
     freebucksDaily: number | null;
-    runningVersion: string | null;
-    onDiskVersion: string | null;
   } {
     const text = this.screenText();
     const verdict = classifyScreen(text);
@@ -137,8 +122,6 @@ export class FreebuffDriver {
       hourSessionMinutesLeft: verdict.countdownMinutes,
       freebucksBalance: verdict.freebucksBalance,
       freebucksDaily: verdict.freebucksDaily,
-      runningVersion: VERSION_BANNER_REGEX.exec(text)?.[1] ?? null,
-      onDiskVersion: metadataVersion(this.options.configDir),
     };
   }
 
@@ -174,7 +157,7 @@ export class FreebuffDriver {
     const deadline = Date.now() + STOP_GRACE_MS;
     while (Date.now() < deadline) {
       if (instance.exited) break;
-      if (classifyScreen(instance.screen.text()).picker !== null) break;
+      if (classifyScreen(instance.screen.text()).welcomeScreen) break;
       await sleep(POLL_MS);
     }
     this.kill();
@@ -187,7 +170,7 @@ export class FreebuffDriver {
     await this.startConversation(instance.pty);
   }
 
-  async awaitIdle(dir: string): Promise<'picker' | 'ready'> {
+  async awaitIdle(dir: string): Promise<'idle' | 'ready'> {
     const instance = await this.acquire(dir);
     return await this.waitSettled(
       instance,
@@ -309,15 +292,15 @@ export class FreebuffDriver {
     });
   }
 
-  private async waitSettled(instance: LiveInstance, assertAlive: () => void, idle: boolean): Promise<'picker' | 'ready'> {
+  private async waitSettled(instance: LiveInstance, assertAlive: () => void, idle: boolean): Promise<'idle' | 'ready'> {
     const { pty, screen, dir } = instance;
     const deadline = Date.now() + this.readyMs;
     let lastEnterAt = 0;
     let continuePressed = false;
     // Issue #23: start of the current stretch of continuously unrecognized Screen.
     let unknownSince: number | null = null;
-    // One throttle for every unsolicited Enter: the picker pick, the Session-in-use
-    // dialog's re-entries, and the Fallback Enter.
+    // One throttle for every unsolicited Enter: the Session-in-use dialog's re-entries
+    // and the Fallback Enter.
     const unsolicitedEnter = async (press: () => void | Promise<void>): Promise<boolean> => {
       const now = Date.now();
       if (now - lastEnterAt <= UNSOLICITED_ENTER_MS) return false;
@@ -364,34 +347,28 @@ export class FreebuffDriver {
         this.loginRequired = false;
         return 'ready';
       }
-      if (idle) {
-        if (verdict.picker !== null || verdict.continueScreen) {
+      if (verdict.continueScreen && !continuePressed) {
+        if (idle) {
+          // ADR-0001 #3: the Continue screen counts as idle; the supervisor presses it
+          // only when a task arrives.
           this.loginRequired = false;
-          return 'picker';
+          return 'idle';
         }
-      } else if (verdict.continueScreen && !continuePressed) {
         // Issue #12: the Continue screen clears on one ENTER per task arrival; an idle
         // Instance at the Continue screen must not be touched.
         continuePressed = true;
         pty.write('\r');
         await sleep(POLL_MS);
-      } else if (verdict.picker !== null) {
-        // ADR-0001 #6: pick the model by rule instead of taking the top row; the pick's
-        // closing Enter shares the unsolicited-Enter throttle.
-        await unsolicitedEnter(() => this.pickModel(pty, verdict));
+      } else if (verdict.welcomeScreen) {
+        // ADR-0004: the input box on the Welcome screen accepts a prompt directly —
+        // the first message starts the Hour session.
+        if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
+        this.loginRequired = false;
+        return 'idle';
       }
       await sleep(POLL_MS);
     }
     throw new FreebuffDriverError('ready_timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));
-  }
-
-  private async pickModel(pty: IPty, verdict: ScreenVerdict): Promise<void> {
-    const index = pickModelIndex(verdict.entries, verdict.freebucksBalance);
-    for (let row = 0; row < index; row++) {
-      pty.write(DOWN_ARROW);
-      await sleep(TYPE_DELAY_MS);
-    }
-    pty.write('\r');
   }
 
   // /new has no log-line echo, so wait for the TUI to swallow it before typing on.

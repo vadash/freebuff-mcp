@@ -3,7 +3,7 @@
 import headless from '@xterm/headless';
 import { homedir } from 'node:os';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
-import { COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, PICKER_TITLE, PRICE_REGEX, STATUS_SEPARATOR } from './markers.ts';
+import { COUNTDOWN_REGEX, FOOTER_SEPARATOR, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, MODEL_FOOTER_HINT, STATUS_SEPARATOR } from './markers.ts';
 import { recognizeScreen } from './signatures.ts';
 
 const { Terminal } = headless;
@@ -29,14 +29,11 @@ export class CliTerminalScreen {
   }
 }
 
-export interface PickerEntry { name: string; price: number }
-
 export interface ScreenVerdict {
   ready: boolean;
   connecting: boolean;
-  picker: 'expanded' | 'collapsed' | null;
+  welcomeScreen: boolean;
   banner: string | null;
-  entries: PickerEntry[];
   activeModel: string | null;
   freebucksBalance: number | null;
   freebucksDaily: number | null;
@@ -56,38 +53,19 @@ export const countdownMinutes = (text: string): number | null => {
   return hours * 60 + minutes;
 };
 
-/** Model observed on the ready status line (`GLM 5.3 Flash · 58m left · 12.8K (1%)`): the
- *  segment before the first `·` on the line carrying the Countdown. Null — including a
- *  drifted, empty first segment — reports no active model and never guesses one. */
-export const statusModel = (text: string): string | null => {
-  const line = text.split('\n').find((candidate) => COUNTDOWN_REGEX.test(candidate) && candidate.includes(STATUS_SEPARATOR));
+/** Model on the footer status line (`DeepSeek V4.1 Flash • high · <dir> · /model to
+ *  change · Chat: New chat`), the same line on the Welcome screen and while a session
+ *  runs: the bottom-most hint-anchored line, first segment before `•`. Null — including
+ *  a drifted footer — reports no active model and never guesses one. */
+export const footerModel = (text: string): string | null => {
+  const lines = text.split('\n');
+  let line: string | undefined;
+  for (const candidate of lines) if (candidate.includes(MODEL_FOOTER_HINT)) line = candidate;
   if (line === undefined) return null;
-  const model = line.slice(0, line.indexOf(STATUS_SEPARATOR)).trim();
+  const bullet = line.indexOf(FOOTER_SEPARATOR);
+  const cut = bullet !== -1 ? bullet : line.indexOf(STATUS_SEPARATOR);
+  const model = line.slice(0, cut).trim();
   return model === '' ? null : model;
-};
-
-/** Picker rows after the title: a name line, then its `<n> Freebucks/hr` price line.
- *  No parseable rows → [], and the pick rule then Enters the highlighted row — what
- *  freebuff itself would do (Fallback Enter; story 9 of #25) — never a wrong pick. */
-const pickerEntries = (lines: string[]): PickerEntry[] => {
-  const title = lines.findIndex((line) => line.includes(PICKER_TITLE));
-  if (title === -1) return [];
-  const entries: PickerEntry[] = [];
-  let name: string | null = null;
-  for (const line of lines.slice(title + 1)) {
-    const price = PRICE_REGEX.exec(line);
-    if (price !== null) {
-      if (name !== null) entries.push({ name, price: Number(price[1]) });
-      name = null;
-      continue;
-    }
-    // Price, balance, and invite lines carry the word Freebucks; box borders are not rows.
-    if (line.includes('Freebucks') || /[─┌└]/.test(line)) continue;
-    const clean = line.replace(/[│›]/g, ' ').trim();
-    if (clean === '') continue;
-    name = clean.split(/\s{2,}/)[0] ?? null;
-  }
-  return entries;
 };
 
 export function classifyScreen(text: string, expectedDir?: string): ScreenVerdict {
@@ -99,18 +77,8 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
   const connecting = recognized === 'connecting';
   const ready = recognized === 'ready';
 
-  // A recognized Model picker whose rows fail to parse stays the picker — degraded to
-  // 'collapsed' once fewer than two rows render — so the settle loop still reaches the
-  // pick rule and its safe fallback instead of timing out on a drifted picker.
-  let picker: ScreenVerdict['picker'] = null;
-  if (recognized === 'Model picker') {
-    const title = lines.findIndex((line) => line.includes(PICKER_TITLE));
-    const rows = title === -1 ? [] : lines.slice(title + 1).filter((line) => line.trim() !== '');
-    picker = rows.length >= 2 ? 'expanded' : 'collapsed';
-  }
-
-  // Strict banner parse: ready without the expected dir line yields null and the
-  // Driver fails dir_mismatch rather than working in the wrong directory.
+  // Strict banner parse: ready or Welcome without the expected dir line yields null and
+  // the Driver fails dir_mismatch rather than working in the wrong directory.
   // freebuff tilde-compresses dirs under the user profile in its dir line
   // (`~\AppData\...`), so expand before the literal match or every home-under
   // workspace (e.g. %TEMP%) fails dir_mismatch.
@@ -123,12 +91,12 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
   return {
     ready,
     connecting,
-    picker,
+    welcomeScreen: recognized === 'Welcome screen',
     banner,
-    entries: pickerEntries(lines),
-    activeModel: statusModel(text),
-    // Missing balance is null, and null keeps the pick rule on its safe default: the
-    // deepseek candidate is skipped because affordability cannot be proven (story 11 of #25).
+    // ADR-0004: the model is never chosen, only observed — the footer carries it on the
+    // Welcome screen and while a session runs. Mid-Turn (neither recognized) reports
+    // null rather than a guess.
+    activeModel: ready || recognized === 'Welcome screen' ? footerModel(text) : null,
     freebucksBalance: balance !== null ? Number(balance[1]) : left !== null ? Number(left[1]) : null,
     freebucksDaily: balance !== null ? Number(balance[2]) : null,
     countdownMinutes: countdownMinutes(text),
@@ -138,12 +106,14 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
 
 /** A timer line: a parseable Countdown line, or any status-line-shaped line carrying a
  *  bare duration token — drifted wording (`58m remaining`) misses COUNTDOWN_REGEX, and
- *  the mid-Turn status line ticks elapsed seconds (`working · 3s · ■ Esc`), yet neither
- *  may ever enter the Freeze key, or every frame would hash differently each second and
- *  a hung Turn would never read as frozen (issue #31). Static lines are identical
- *  between frames, so over-stripping cannot mask a freeze. */
+ *  the mid-Turn ticker ticks elapsed seconds (`working · 3s · ■ Esc`,
+ *  `⎘ • 3s • △▽`), yet neither may ever enter the Freeze key, or every frame would
+ *  hash differently each second and a hung Turn would never read as frozen (issue #31).
+ *  Static lines are identical between frames, so over-stripping cannot mask a freeze. */
 const isTimerLine = (line: string): boolean =>
-  COUNTDOWN_REGEX.test(line) || (line.includes(STATUS_SEPARATOR) && /\b(?:\d+h(?:\s+\d+m)?|\d+m|\d+:\d\d|\d+s)\b/.test(line));
+  COUNTDOWN_REGEX.test(line) ||
+  ((line.includes(STATUS_SEPARATOR) || line.includes(FOOTER_SEPARATOR)) &&
+    /\b(?:\d+h(?:\s+\d+m)?|\d+m|\d+:\d\d|\d+s)\b/.test(line));
 
 /** The Screen as the Watchdog compares it: Countdown and Freebucks lines dropped, so a
  *  ticking timer never masks a freeze. */

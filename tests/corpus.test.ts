@@ -6,10 +6,8 @@
 // hand-made emulator vectors (tests/fixtures/screen/AGENTS.md).
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { classifyScreen } from '../src/protocol/screen.ts';
 import { recognizeScreen, type KnownScreen } from '../src/protocol/signatures.ts';
 import { flattenScreen } from '../src/protocol/screen.ts';
-import { unaffordablePickReason } from './helpers/capture.ts';
 
 const corpusDir = new URL('./fixtures/screen/', import.meta.url);
 // Fixtures store the flattened screen with \n; the real PTY (ConPTY) emits \r\n, and LF
@@ -19,13 +17,13 @@ const load = async (folder: string, name: string): Promise<string> =>
 
 // The naming rule: a fixture's name names the screen it shows, and this table is the
 // screen that name must produce at level pass. Both dialog names (`single-instance`,
-// `session-in-use`) name the same dialog via its two wordings; the `expanded` suffix is
-// historical (0.0.193 was born expanded, 0.0.199 collapsed); `connecting-to-ready` is
+// `session-in-use`) name the same dialog via its two wordings; `connecting-to-ready` is
 // the screen after the cursor-up rewrite erases Connecting.
 const RECOGNIZED_AS: Record<string, KnownScreen> = {
   'continue': 'Continue',
   'error': 'ready',
-  'picker-expanded': 'Model picker',
+  'welcome': 'Welcome screen',
+  'welcome-expired': 'Welcome screen',
   'ready': 'ready',
   'session-in-use': 'Session-in-use dialog',
   'single-instance': 'Session-in-use dialog',
@@ -40,7 +38,7 @@ const RECOGNIZED_AS: Record<string, KnownScreen> = {
 };
 
 // Version folders grow only by a deliberate capture or dump promotion (tests/fixtures/screen/AGENTS.md).
-const VERSIONS = ['0.0.193', '0.0.198', '0.0.199'];
+const VERSIONS = ['0.0.193', '0.0.198', '0.0.199', '0.1.0', '0.1.2'];
 
 const folders = (): string[] =>
   readdirSync(corpusDir, { withFileTypes: true })
@@ -79,10 +77,10 @@ describe('screen fixture corpus (issue #27)', () => {
 
   describe('negative', () => {
     // Ready frames baiting a loosened Continue signature (issue #28): an Answer carrying
-    // the Continue wording, and a mid-Turn status line showing Esc. The Answer's wording
-    // sits above the Continue signature's bottom-rows region (and below its both-strong
-    // threshold), and the mid-Turn frame lost the Countdown line — both stay ready,
-    // never Continue.
+    // the Continue wording, and a mid-Turn status line showing Esc. The Answer's quoted
+    // prompt sits in the transcript area, above the Continue signature's bottom-rows
+    // region, and the mid-Turn frame lost the Countdown line — both stay ready, never
+    // Continue.
     const NOT_CONTINUE: Record<string, { level: 'pass' | 'degraded'; missing: string[] }> = {
       'continue-wording-answer': { level: 'pass', missing: [] },
       'mid-turn-esc': { level: 'degraded', missing: ['COUNTDOWN_REGEX'] },
@@ -121,13 +119,6 @@ describe('screen fixture corpus (issue #27)', () => {
       expect(recognition.missing).toEqual(['COUNTDOWN_REGEX']);
     });
 
-    it('the picker without its balance line is degraded, naming FREEBUCKS_BALANCE_REGEX', async () => {
-      const recognition = recognizeScreen(await withoutLinesContaining('0.0.199', 'picker-expanded', 'Freebucks daily'));
-      expect(recognition.screen).toBe('Model picker');
-      expect(recognition.level).toBe('degraded');
-      expect(recognition.missing).toEqual(['FREEBUCKS_BALANCE_REGEX']);
-    });
-
     it('ready with only its Countdown left is not recognized: weak Markers never recognize', async () => {
       const recognition = recognizeScreen(await withoutLinesContaining('0.0.199', 'ready', 'Enter a coding task'));
       expect(recognition.screen).toBeNull();
@@ -138,7 +129,7 @@ describe('screen fixture corpus (issue #27)', () => {
       expect(recognition.screen).toBeNull();
     });
 
-    it('Continue with one of its two strong Markers removed is not recognized', async () => {
+    it('Continue without its prompt Marker is not recognized', async () => {
       const recognition = recognizeScreen(await withoutLinesContaining('0.0.199', 'continue', 'Press Enter to continue'));
       expect(recognition.screen).toBeNull();
     });
@@ -146,20 +137,6 @@ describe('screen fixture corpus (issue #27)', () => {
     it('the login gate without its Marker is not recognized', async () => {
       const recognition = recognizeScreen(await withoutLinesContaining('synthetic', 'login-required', 'Not authenticated'));
       expect(recognition.screen).toBeNull();
-    });
-  });
-
-  // Issue #32: the pick rule's affordability gate, exercised against the real captured
-  // rows of every version on file — the reason the corpus holds a picker capture
-  // (story 25). Parsed balance missing means the rule must have skipped the paid model
-  // entirely, since affordability cannot be proven (story 11 of #25).
-  describe('pick rule over the captured rows (issue #32)', () => {
-    const withPicker = (): string[] => folders().filter((folder) => fixtureNames(folder).includes('picker-expanded'));
-
-    it.each(withPicker())('%s: the pick rule never picks a model the balance cannot afford', async (version) => {
-      const verdict = classifyScreen(await load(version, 'picker-expanded'));
-      expect(verdict.entries.length, `${version}/picker-expanded.ansi parses no picker rows`).toBeGreaterThan(0);
-      expect(unaffordablePickReason(verdict), `${version}/picker-expanded.ansi`).toBeNull();
     });
   });
 });

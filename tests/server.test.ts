@@ -66,14 +66,16 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task two' } })
       .then((r) => completions.push(toolText(r as CallResult)));
     await Promise.all([first, second]);
-    const submitted = (prompt: string): string => `stub(GLM 5.3 Flash): ${PROMPT_PREAMBLE}\n${prompt}`;
+    const submitted = (prompt: string): string => `stub(DeepSeek V4.1 Flash): ${PROMPT_PREAMBLE}\n${prompt}`;
     expect(completions).toEqual([submitted('task one'), submitted('task two')]);
-    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'GLM 5.3 Flash', queueDepth: 0 });
+    const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'DeepSeek V4.1 Flash', queueDepth: 0 });
     expect(status.workspaceDir).toContain('freebuff-ws-');
     expect(status.targetDir).toContain('freebuff-sup-task-');
     const toolStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
     expect(toolStatus.hourSessionMinutesLeft).toBe(432);
-    expect(toolStatus.freebucksDaily).toBeNull();
+    // The 0.1.0 session screen keeps the account box, so the daily allowance is on
+    // screen at ready (ADR-0004; the old picker-only balance read null here).
+    expect(toolStatus.freebucksDaily).toBe(25);
     const chatDirs = readdirSync(chatsRoot(dirs.configDir));
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
     for (const dir of chatDirs) expect(dir.startsWith('chat-new-')).toBe(true);
@@ -126,7 +128,7 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
       name: 'run_prompt',
       arguments: { dir: dirs.taskDir, prompt: 'after reset' },
     })) as CallResult;
-    expect(toolText(next)).toBe(`stub(GLM 5.3 Flash): ${PROMPT_PREAMBLE}\nafter reset`);
+    expect(toolText(next)).toBe(`stub(DeepSeek V4.1 Flash): ${PROMPT_PREAMBLE}\nafter reset`);
   }, 30_000);
 
   it('survives the MCP client disconnecting and completes the in-flight task', async () => {
@@ -162,11 +164,11 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
 
     const second = boot('slow');
     await second.connect(transport!);
-    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'GLM 5.3 Flash' });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
     const status = JSON.parse(
       toolText((await second.callTool({ name: 'status', arguments: {} })) as CallResult),
     ) as Record<string, unknown>;
-    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'GLM 5.3 Flash' });
+    expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'DeepSeek V4.1 Flash' });
     expect(String(status.targetDir)).toContain('freebuff-sup-task-');
   }, 30_000);
 
@@ -182,7 +184,7 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
     expect(overflow.isError).toBe(true);
     expect(JSON.parse(overflow.content[0]!.text ?? '')).toEqual({ busy: true, position: 5 });
     const answers = (await Promise.all(tasks)).map((r) => toolText(r as CallResult));
-    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(GLM 5.3 Flash): ${PROMPT_PREAMBLE}\n${prompt}`));
+    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(DeepSeek V4.1 Flash): ${PROMPT_PREAMBLE}\n${prompt}`));
   }, 30_000);
 
   it('runs the doctor protocol check through the supervisor op', async () => {

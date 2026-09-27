@@ -138,15 +138,6 @@ export const answerOf = (result: { content: Array<{ type: string; text?: string 
   return result.content[0]!.text ?? '';
 };
 
-// ConPTY repaints pad rows to the full terminal width; captured fixtures keep trailing
-// padding trimmed. Screens and fixtures only compare equal row-by-row right-trimmed.
-export const trimRows = (text: string): string => text.replace(/[ \t]+$/gm, '').replace(/\n+$/, '');
-
-// The stub stands in for the current CLI: it replays the captured picker fixture
-// verbatim, so the expected tail of its picker Screen is the fixture's own rows.
-export const stubPickerRows = (): string =>
-  readFileSync(new URL('../fixtures/screen/0.0.199/picker-expanded.ansi', import.meta.url), 'utf8').replace('\x1b[2J\x1b[H\n', '');
-
 // Issues #18/#23: what the stub received, from FREEBUFF_STUB_INPUT_LOG — each spawn,
 // each bracketed paste, each submitted line, and each screen-changing Enter.
 const StubInputLine = z.discriminatedUnion('event', [

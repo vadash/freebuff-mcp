@@ -8,14 +8,14 @@ import { FreebuffDriverError } from './driver.ts';
 import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
 import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
 import { corpusVersions } from './protocol/corpus.ts';
-import { hasScreenDump } from './protocol/screenDump.ts';
+import { hasScreenDump, metadataVersion } from './protocol/screenDump.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
 import { acquireSupervisorLock } from './supervisorLock.ts';
 import { PROMPT_PREAMBLE, assertSafeTarget, ensureJunction, workspaceDirFor } from './workspace.ts';
 
-export type SupervisorState = 'stopped' | 'spawning' | 'picker' | 'ready' | 'busy';
+export type SupervisorState = 'stopped' | 'spawning' | 'idle' | 'ready' | 'busy';
 
 export interface SupervisorConfig {
   pipeName?: string;
@@ -51,7 +51,6 @@ export interface StatusPayload {
   needsLogin: boolean;
   // Issue #31: Drift is visible on status, not just to whoever calls doctor.
   screenDrift: boolean;
-  updatePending: { running: string; onDisk: string } | null;
 }
 
 export type SupervisorResponse =
@@ -151,14 +150,14 @@ export class Supervisor {
         // Observed on the ready Screen status line; a dead Instance observes nothing.
         const verdict = this.driver.isAlive() ? this.verdict() : null;
         const activeModel = verdict?.activeModel ?? null;
-        // Issue #31: Drift on record for the running CLI version — a Screen dump for
+        // Issue #31: Drift on record for the installed CLI version — a Screen dump for
         // it (the settle loop files unknown and degraded frames there) — while the
         // fixture corpus does not cover the version yet: promoting a dump into the
         // corpus is what clears the signal. Keyed by the installed version, the same
         // folder name the dump writer uses ('unknown' when the metadata file is
         // unreadable), so an update shipping a different version starts clean. Read
         // from disk on every status, so an intermittent screen never flickers it.
-        const driftVersion = probe.onDiskVersion ?? 'unknown';
+        const driftVersion = metadataVersion(this.driverOptions.configDir) ?? 'unknown';
         reply({
           ok: true,
           kind: 'status',
@@ -172,12 +171,6 @@ export class Supervisor {
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),
           screenDrift: hasScreenDump(this.driverOptions.configDir, driftVersion) && !corpusVersions().includes(driftVersion),
-          updatePending:
-            probe.runningVersion !== null &&
-            probe.onDiskVersion !== null &&
-            versionNewer(probe.onDiskVersion, probe.runningVersion)
-              ? { running: probe.runningVersion, onDisk: probe.onDiskVersion }
-              : null,
         });
         break;
       }
@@ -217,8 +210,8 @@ export class Supervisor {
     reply({ ok: true, kind: 'ok' });
   }
 
-  // Issue #18: /new goes to the ready Instance, which keeps running. At the picker or
-  // with no Instance there is no Conversation to leave: every Task starts with /new.
+  // Issue #18: /new goes to the ready Instance, which keeps running. On the Welcome
+  // screen or with no Instance there is no Conversation to leave: every Task starts with /new.
   private async newConversation(): Promise<SupervisorResponse> {
     if (this.active !== null || this.queue.length > 0 || this.startingConversation) {
       return { ok: false, kind: 'error', error: 'new_session failed: a task is active or queued' };
@@ -248,7 +241,7 @@ export class Supervisor {
   private screenState(verdict = this.verdict()): SupervisorState {
     if (!this.driver.isAlive()) return 'stopped';
     if (verdict.ready) return 'ready';
-    if (verdict.picker !== null || verdict.continueScreen) return 'picker';
+    if (verdict.welcomeScreen || verdict.continueScreen) return 'idle';
     return 'stopped';
   }
 
@@ -419,8 +412,9 @@ export class Supervisor {
     return { stop: () => clearInterval(timer) };
   }
 
-  // A fresh Instance in the workspace, idle at the picker or ready (an unexpired Hour
-  // session resumes). A failed respawn leaves the supervisor stopped; the next Task spawns.
+  // A fresh Instance in the workspace, idle on the Welcome screen or ready (an
+  // unexpired Hour session resumes). A failed respawn leaves the supervisor stopped;
+  // the next Task spawns.
   private async respawn(): Promise<void> {
     this.spawning = true;
     await this.driver.stop();
@@ -512,16 +506,6 @@ const formatDuration = (ms: number): string => {
   if (ms % 60_000 !== 0) return `${ms / 1000}s`;
   const minutes = ms / 60_000;
   return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-};
-
-const versionNewer = (candidate: string, current: string): boolean => {
-  const a = candidate.split('.').map(Number);
-  const b = current.split('.').map(Number);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const delta = (a[i] ?? 0) - (b[i] ?? 0);
-    if (delta !== 0) return delta > 0;
-  }
-  return false;
 };
 
 if (isMainModule(import.meta.url)) {

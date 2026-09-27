@@ -1,5 +1,5 @@
 ---
-status: accepted (2026-09-24); §4's eager spawn at bind and all of §5 superseded by ADR-0003 (2026-09-27)
+status: accepted (2026-09-24); §4's eager spawn at bind and all of §5 superseded by ADR-0003 (2026-09-27); §3's picker idle and all of §6 superseded by ADR-0004 (2026-09-27)
 ---
 
 # ADR-0001: Supervise one freebuff CLI Instance behind an MCP proxy
@@ -53,6 +53,9 @@ final answer back, and it restarts often.
 - The supervisor never sends `/end-session`.
 - With no Hour session running, the Instance idles at the **Model picker**
   (free). A model is picked only when a task arrives.
+  > Superseded by [ADR-0004](0004-no-model-selection.md) — the picker is gone;
+  > the Instance idles at the Welcome screen and the first message starts the
+  > session.
 - With an Hour session running, the Instance idles at the ready input box; the
   timer runs anyway.
 - When an Hour session expires, freebuff lets the current turn finish and then
@@ -91,6 +94,10 @@ final answer back, and it restarts often.
 - Multi-directory support (e.g. via symlinks) is out of scope for v1.
 
 ### 6. Hardcoded model pick
+
+> Superseded by [ADR-0004](0004-no-model-selection.md) — the picker is gone;
+> the supervisor never selects a model and never sends `/model`. Kept for the
+> record of why the rule existed.
 
 At the picker, in order:
 

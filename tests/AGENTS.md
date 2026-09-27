@@ -17,7 +17,7 @@ Vitest picks up every `*.test.ts` / `*.test.mjs` here. Three tiers:
 
 The stub copies the marker strings on purpose, so the driver under test is
 the only side that imports `src/protocol`. When a Marker's wording changes,
-update the stub's copy too. The stub replays the captured Model picker and
+update the stub's copy too. The stub replays the captured Welcome screen and
 Continue fixtures verbatim, so those two can't drift.
 
 ## Real smoke

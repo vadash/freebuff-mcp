@@ -1,36 +1,36 @@
 // Protocol-faithful stub of the freebuff TUI for driver e2e tests. Deliberately
 // a dependency-free .mjs: the marker strings and the projectKey hash below
 // duplicate src/protocol/{markers,chatStore}.ts on purpose so the driver under
-// test is the only side consuming the real modules. The Model picker and the
-// Continue screen replay the real captured fixtures verbatim
-// (tests/fixtures/screen/); FREEBUFF_STUB_COUNTDOWN_MIN,
-// FREEBUFF_STUB_FREEBUCKS and FREEBUFF_STUB_PICKER override the numbers the
-// protocol reads; FREEBUFF_STUB_SESSION_ALIVE=1 boots into the ready screen of
-// an unexpired Hour session instead of the picker. The displayed model is
-// keyboard-driven (issue #13): picker cursor keystrokes pick the entry whose
-// name the ready status line and the `stub(<model>):` answer echo report.
-// FREEBUFF_STUB_TURN_LINES (issue #17) is a JSON array, one entry per Turn, of the
-// lines that Turn prints to the Screen mid-Turn before it ends normally.
-// FREEBUFF_STUB_INPUT_LOG (issue #18) names a JSON-lines file recording each spawn,
-// each bracketed paste and each submitted input line, so tests see exactly what the
-// driver sent. Mode `no-answer` ends the first Turn without a fullResponse. Mode
-// `unknown` (issue #21) boots into a screen matching no known class and repaints it
-// with a ticking Countdown, for the driver's screen-dump tests. Enter flips it to the
-// ready screen on the fixture-cursor model (issue #23, the accepted picker cost); the
-// first FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER Enters are swallowed so tests can observe
+// test is the only side consuming the real modules. The Welcome screen and the
+// session screen replay the real captured 0.1.0 fixtures verbatim
+// (tests/fixtures/screen/), with the captured footer directory swapped for the
+// stub's own cwd (FREEBUFF_STUB_CWD renders a foreign one, for dir_mismatch) and
+// the env-controlled numbers substituted: FREEBUFF_STUB_COUNTDOWN_MIN and
+// FREEBUFF_STUB_FREEBUCKS. FREEBUFF_STUB_SESSION_ALIVE=1 boots into the session
+// screen of an unexpired Hour session instead of the Welcome screen. There is no
+// model choice (ADR-0004): the footer names the model, and the `stub(<model>):`
+// answer echo reports it. FREEBUFF_STUB_TURN_LINES (issue #17) is a JSON array,
+// one entry per Turn, of the lines that Turn prints to the Screen mid-Turn before
+// it ends normally. FREEBUFF_STUB_INPUT_LOG (issue #18) names a JSON-lines file
+// recording each spawn, each bracketed paste and each submitted input line, so
+// tests see exactly what the driver sent. Mode `no-answer` ends the first Turn
+// without a fullResponse. Mode `unknown` (issue #21) boots into a screen matching
+// no known class and repaints it with a ticking Countdown; an accepted Enter flips
+// it to the Welcome screen (the Fallback Enter lands in the input box); the first
+// FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER Enters are swallowed so tests can observe
 // the driver's fallback cadence, and every Enter lands in the input log.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
-const READY_PROMPT = 'Enter a coding task or / for commands';
 const CONNECTING = 'Connecting';
-const PICKER_TITLE = 'Start coding for free';
 const TURN_END_MSG = 'Main prompt finished';
 const MSG_KEY = 'msg';
 const SHOULD_END_TURN_KEY = 'shouldEndTurn';
 const FULL_RESPONSE_KEY = 'fullResponse';
 const LOGIN_REQUIRED = 'Not authenticated';
-const BALANCE_LINE = /FREE · \d+\/\d+ Freebucks daily/;
+const MODEL_FOOTER_HINT = '/model to change';
+const BALANCE_LINE = /(\d+)\/(\d+) Freebucks remaining/;
+const COUNTDOWN_LINE = /(?:\d+h(?:\s+\d+m)?|\d+m)\s+left|\d+:\d\d\s+left/;
 
 const PASTE_START = '200~';
 const PASTE_END = '201~';
@@ -43,18 +43,16 @@ const args = process.argv.slice(2);
 const cwd = args[args.indexOf('--cwd') + 1];
 // Issue #30: renders a foreign directory in the screen's dir line, so tests see the
 // strict banner parse fail dir_mismatch (`FREEBUFF_STUB_CWD`).
-const cwdLine = process.env.FREEBUFF_STUB_CWD ?? cwd;
+const stubDir = process.env.FREEBUFF_STUB_CWD ?? cwd;
 const mode = process.env.FREEBUFF_STUB_MODE ?? 'happy';
 const configDir = process.env.FREEBUFF_CONFIG_DIR;
-const version = process.env.FREEBUFF_STUB_VERSION ?? '0.0.186';
 
-// Env controls (issue #11): Countdown minutes, Freebucks balance, picker entries and prices.
+// Env controls (issue #11): Countdown minutes and Freebucks balance.
 let countdownMin = Number(process.env.FREEBUFF_STUB_COUNTDOWN_MIN ?? 432);
 const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
-// Issue #30: renders the ready status line without its Countdown segment, so tests see
-// the parse fallbacks for unknown time left (`FREEBUFF_STUB_NO_COUNTDOWN=1`).
+// Issue #30: renders the session usage line without its Countdown segment, so tests
+// see the parse fallbacks for unknown time left (`FREEBUFF_STUB_NO_COUNTDOWN=1`).
 const noCountdown = process.env.FREEBUFF_STUB_NO_COUNTDOWN === '1';
-const pickerOverride = process.env.FREEBUFF_STUB_PICKER ? JSON.parse(process.env.FREEBUFF_STUB_PICKER) : null;
 const turnLines = process.env.FREEBUFF_STUB_TURN_LINES ? JSON.parse(process.env.FREEBUFF_STUB_TURN_LINES) : [];
 let turnCounter = 0;
 const inputLog = process.env.FREEBUFF_STUB_INPUT_LOG ?? null;
@@ -62,12 +60,10 @@ const logInput = (entry) => {
   if (inputLog !== null) appendFileSync(inputLog, JSON.stringify(entry) + '\n');
 };
 
-const bannerLine = `freebuff v${version}`;
-
-const fixture = (name) => readFileSync(new URL(`./fixtures/screen/0.0.199/${name}`, import.meta.url), 'utf8');
-// Default balance numbers come from the captured fixture, so a capture refresh
-// cannot desync the stub's replayed picker from the harness's expected tail.
-const fixtureBalance = (BALANCE_LINE.exec(fixture('picker-expanded.ansi'))?.[0].match(/\d+\/\d+/) ?? ['20/25'])[0];
+const fixture = (name) => readFileSync(new URL(`./fixtures/screen/0.1.0/${name}`, import.meta.url), 'utf8');
+// Default balance numbers come from the captured fixture, so a capture refresh cannot
+// desync the stub's replayed screens from the harness's expected tail.
+const fixtureBalance = (BALANCE_LINE.exec(fixture('welcome.ansi'))?.[0] ?? '25/25 Freebucks remaining').split(' ')[0];
 const [balanceLeft, balanceDaily] = (process.env.FREEBUFF_STUB_FREEBUCKS ?? fixtureBalance).split('/').map(Number);
 // Fixtures store the flattened screen with \n; the ConPTY on the other side of the
 // driver needs \r\n, exactly like the real TUI's output.
@@ -75,8 +71,8 @@ const crlf = (text) => text.replace(/\n/g, '\r\n');
 
 // Real Countdown wording: `7h 12m left`, `1h left`, `59m left`. Mode `drift` is the
 // degraded screen mode (issue #31): the altered wording (`remaining`) misses the
-// COUNTDOWN_REGEX Marker, so the ready screen reads as degraded — `doctor` names the
-// drifted Marker and the Supervisor's settle check records the Drift.
+// COUNTDOWN_REGEX Marker, so the session screen reads as degraded — `doctor` names
+// the drifted Marker and the Supervisor's settle check records the Drift.
 const LEFT = mode === 'drift' ? 'remaining' : 'left';
 const countdownText = (min) => {
   const total = Math.max(0, Math.floor(min));
@@ -85,49 +81,70 @@ const countdownText = (min) => {
   return total % 60 === 0 ? `${hours}h ${LEFT}` : `${hours}h ${total % 60}m ${LEFT}`;
 };
 
-// The captured picker with the balance numbers substituted and, when
-// FREEBUFF_STUB_PICKER is set, the captured rows replaced by the given entries
-// (same row shape: a name line, then a `<n> Freebucks/hr` price line). The stub's
-// banner + directory header stays on top, as in v1, so the version probe keeps
-// seeing `freebuff v<version>` while parked here.
-const pickerScreen = () => {
-  const lines = fixture('picker-expanded.ansi').replace('\x1b[2J\x1b[H\n', '').split('\n');
-  const title = lines.findIndex((line) => line.includes(PICKER_TITLE));
-  const balance = lines.findIndex((line) => BALANCE_LINE.test(line));
-  let rows = lines;
-  if (pickerOverride !== null && title !== -1 && balance !== -1) {
-    const width = 75;
-    const bar = (left, right) => left + '─'.repeat(width) + right;
-    const cell = (inner) => `│${inner.padEnd(width)}│`;
-    const priceRow = (price) => {
-      const text = `${price} Freebucks/hr`;
-      return cell(' '.repeat(Math.floor((width - text.length) / 2)) + text);
-    };
-    rows = [
-      ...lines.slice(0, title + 1),
-      '',
-      ...pickerOverride.flatMap((entry, i) => [
-        bar('┌', '┐'),
-        cell(`   ${i === selection ? '›' : ' '} ${entry.name}    NEW`),
-        priceRow(entry.price),
-        bar('└', '┘'),
-        '',
-      ]),
-      ...lines.slice(balance),
-    ];
-  }
-  // The 0.0.198-era synthetic hint row is gone: the captured fixture renders the
-  // `H · History` row itself, and the stub replays it verbatim.
-  const body = rows.map((line) => line.replace(BALANCE_LINE, `FREE · ${balanceLeft}/${balanceDaily} Freebucks daily`));
-  return CLEAR + crlf([bannerLine, cwdLine, ...body].join('\n'));
+// The captured screens with two substitutions: the footer directory segment becomes
+// the stub's own cwd (the strict banner parse reads it), and the balance numbers
+// become the env-controlled ones. The dir swap stays width-neutral — the Chat title
+// tail absorbs the growth — because a footer past 160 cols wraps and scrolls the
+// whole Screen up one row.
+const swapFooterDir = (text) =>
+  text
+    .split('\n')
+    .map((line) => {
+      if (!line.includes(MODEL_FOOTER_HINT)) return line;
+      const parts = line.split(' · ');
+      if (parts.length < 2) return line;
+      parts[1] = ` ${stubDir}`;
+      let out = parts.join(' · ');
+      const grow = out.length - line.length;
+      if (grow > 0 && out.length > 160) {
+        const last = parts.length - 1;
+        parts[last] = parts[last].slice(0, Math.max(1, parts[last].length - grow));
+        out = parts.join(' · ');
+      }
+      return out;
+    })
+    .join('\n');
+const swapBalance = (text) => text.replace(BALANCE_LINE, `${balanceLeft}/${balanceDaily} Freebucks remaining`);
+
+// ADR-0004: the Instance idles on the Welcome screen — first message starts the
+// Hour session.
+const welcomeScreen = () => CLEAR + crlf(swapBalance(swapFooterDir(fixture('welcome.ansi').replace('\x1b[2J\x1b[H\n', ''))));
+
+// The session screen: the same layout with `Session active` in the info box, the
+// usage line carrying the Countdown, and the turn transcript above. The Countdown
+// swap stays width-neutral — the slack comes out of the padding run before the
+// End-session button on the same row — because a wider row wraps and scrolls the
+// whole layout up one row (the real TUI overwrites the token in place).
+const swapCountdown = (body) => {
+  const at = body.search(COUNTDOWN_LINE);
+  if (at === -1) return body;
+  const want = noCountdown ? '' : countdownText(countdownMin);
+  const token = COUNTDOWN_LINE.exec(body)[0];
+  const button = body.indexOf('✕ End session', at);
+  let runStart = button === -1 ? -1 : button;
+  while (runStart > at && body[runStart - 1] === ' ') runStart -= 1;
+  if (button === -1 || runStart === at) return body.slice(0, at) + want + body.slice(at + token.length);
+  const delta = want.length - token.length;
+  const keep = Math.max(1, button - runStart - delta);
+  return body.slice(0, at) + want + body.slice(at + token.length, runStart) + ' '.repeat(keep) + body.slice(button);
 };
 
-const continueScreen = () => CLEAR + crlf(fixture('continue.ansi'));
+// The session screen: the same layout with `Session active` in the info box, the
+// usage line carrying the Countdown, and the turn transcript above.
+const readyScreen = () =>
+  CLEAR + crlf(swapCountdown(swapBalance(swapFooterDir(fixture('ready.ansi').replace('\x1b[2J\x1b[H\n', '')))));
+
+// 0.1.0 shows no Continue screen at plain expiry (the box just reverts to the Welcome
+// wording); `Press Enter to continue` now belongs to the out-of-credits dialog, which
+// this balance never reaches. The expire-mode tests replay the last generation's
+// captured Continue fixture to keep the Enter-on-continue mechanism covered.
+const continueScreen = () => CLEAR + crlf(fixture('../0.0.199/continue.ansi'));
 
 // Degraded dialog frame (issue #31): the strong Session-in-use Marker present, the weak
 // 'Take over' Marker removed, so recognition reads the dialog at level degraded and the
 // settle loop must dump the frame even though the dialog branch never falls through to
-// the ordinary dump site.
+// the ordinary dump site. The dialog wording is stable across CLI versions, so the
+// 0.0.198 capture stays its source.
 const driftDialogScreen = () =>
   CLEAR +
   crlf(
@@ -137,32 +154,22 @@ const driftDialogScreen = () =>
       .join('\n'),
   );
 
-// Issue #21: a frame matching no known class (no picker, ready, Continue, session-in-use,
-// login or connecting marker), with a ticking Countdown line so the driver's Freeze-key
-// dedupe is exercised: repaints collapse to one dump file that still keeps the Countdown.
+// Issue #21: a frame matching no known class, with a ticking Countdown line so the
+// driver's Freeze-key dedupe is exercised: repaints collapse to one dump file that
+// still keeps the Countdown.
 const UNKNOWN_TITLE = 'Quantum flux calibration panel';
 const unknownScreen = () =>
-  CLEAR + crlf([bannerLine, cwdLine, '─'.repeat(60), `  ${UNKNOWN_TITLE}`, `  Sync window: ${countdownText(countdownMin)}`, '  Await further instructions.', '─'.repeat(60), ''].join('\n'));
+  CLEAR + crlf([stubDir, '─'.repeat(60), `  ${UNKNOWN_TITLE}`, `  Sync window: ${countdownText(countdownMin)}`, '  Await further instructions.', '─'.repeat(60), ''].join('\n'));
 
-// Ready input box with the Hour-session status line, in the captured wording.
-const readyScreen = () => {
-  const status = ` ${model}${noCountdown ? '' : ` · ${countdownText(countdownMin)}`} · 12.9K (3%)`;
-  const endButton = '✕ End session';
-  const statusLine = status + ' '.repeat(Math.max(1, 157 - status.length - endButton.length)) + endButton;
-  return CLEAR + crlf(
-    [
-      bannerLine,
-      cwdLine,
-      statusLine,
-      '╭' + '─'.repeat(94) + '╮',
-      '│'.padEnd(95) + '│',
-      '│  ▍' + READY_PROMPT.padEnd(91) + '│',
-      '│'.padEnd(95) + '│',
-      '╰' + '─'.repeat(94) + '╯',
-      '',
-    ].join('\n'),
-  );
+// ADR-0004: no model choice — the footer names the model the CLI remembers, so the
+// `stub(<model>):` answer echo reports the fixture's model.
+const footerModelName = () => {
+  const line = fixture('welcome.ansi').split('\n').find((candidate) => candidate.includes(MODEL_FOOTER_HINT)) ?? '';
+  const bullet = line.indexOf('•');
+  return ((bullet === -1 ? line : line.slice(0, bullet)).trim() || 'none');
 };
+
+const model = footerModelName();
 
 const projectKey = basename(cwd);
 
@@ -174,22 +181,15 @@ writeFileSync(join(configDir, 'freebuff.lock'), String(process.pid));
 if (process.env.FREEBUFF_STUB_PARENT_PID_FILE) writeFileSync(process.env.FREEBUFF_STUB_PARENT_PID_FILE, String(process.ppid));
 logInput({ event: 'spawn', pid: process.pid });
 
-// The displayed model is keyboard-driven: the picker cursor names it (issue #13), never
-// settings.json. Without FREEBUFF_STUB_PICKER the replayed fixture keeps the real TUI's
-// remembered-model cursor, and a pick lands on that row.
-const fixtureCursorName = () => {
-  const lines = fixture('picker-expanded.ansi').split('\n');
-  const cursorLine = lines.find((line) => line.includes('›')) ?? '';
-  return cursorLine.replace(/[│›]/g, ' ').trim().split(/\s{2,}/)[0] ?? 'none';
-};
-
-let phase = 'picker';
+let phase = 'idle';
 let pending = '';
-// Issue #23: the unknown screen stands until an accepted Enter flips the stub to ready.
+// The Session-in-use dialog stands until an Enter (`Take over`) flips the stub to the
+// Welcome screen, as the real dialog does.
+let dialogStuck = mode === 'drift-dialog';
+// Issue #23: the unknown screen stands until an accepted Enter flips the stub to the
+// Welcome screen.
 let unknownStuck = mode === 'unknown';
 let unknownIgnore = Number(process.env.FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER ?? 0);
-let selection = 0;
-let model = 'none';
 let escapeState = 0;
 let csi = '';
 let pasting = false;
@@ -198,14 +198,6 @@ let chatCounter = 0;
 let newChatRequested = false;
 let lastLogPath = null;
 let expireShown = false;
-
-// Enter at the picker — or at the unknown screen standing in for one (issue #23) —
-// accepts the cursor's model and starts the Hour session.
-const acceptEnter = () => {
-  model = pickerOverride !== null ? (pickerOverride[selection]?.name ?? 'none') : fixtureCursorName();
-  phase = 'ready';
-  out(readyScreen());
-};
 
 const chatsRoot = () => join(configDir, 'projects', projectKey, 'chats');
 
@@ -221,13 +213,18 @@ const submit = async (prompt) => {
   if (!prompt || mode === 'no-ack') return;
   if (prompt === '/end-session') {
     appendFileSync(join(configDir, 'end-session.log'), JSON.stringify({ [MSG_KEY]: 'end-session' }) + '\n');
-    out(pickerScreen());
-    phase = 'picker';
+    phase = 'idle';
+    out(welcomeScreen());
     return;
   }
   if (prompt === '/new') {
     newChatRequested = true;
     return;
+  }
+  // The first message starts the Hour session: the screen flips to the session view.
+  if (phase === 'idle') {
+    phase = 'ready';
+    out(readyScreen());
   }
   const dirName = newChatRequested ? `chat-new-${chatCounter++}` : `chat-${chatCounter++}`;
   newChatRequested = false;
@@ -273,7 +270,7 @@ const submit = async (prompt) => {
   await sleep(30 + Math.random() * 50);
   appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: TURN_END_MSG }) + '\n');
   // Issue #11: the Hour session expiring shows the captured Continue screen; Enter
-  // starts the next Hour session (ready), Esc reopens the picker.
+  // starts the next Hour session.
   if (mode === 'expire' && !expireShown) {
     expireShown = true;
     phase = 'continue';
@@ -282,14 +279,14 @@ const submit = async (prompt) => {
 };
 
 process.stdin.setEncoding('utf8');
-// The real TUI reads raw keys; a cooked stdin lets the console host swallow the
-// picker's arrow keys before this process ever sees them.
+// The real TUI reads raw keys; a cooked stdin lets the console host swallow control
+// keys before this process ever sees them.
 process.stdin.setRawMode(true);
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('data', (chunk) => {
   for (const char of chunk) {
-    // Escape sequences (CSI): the down/up arrows at the picker, and the bracketed-paste
-    // markers, between which every char is literal text (Enter included).
+    // Escape sequences (CSI): the bracketed-paste markers, between which every char is
+    // literal text (Enter included).
     if (escapeState === 1) {
       escapeState = char === '[' ? 2 : 0;
       csi = '';
@@ -309,19 +306,14 @@ process.stdin.on('data', (chunk) => {
       } else if (sequence === PASTE_END) {
         pasting = false;
         logInput({ event: 'paste', text: pasted });
-      } else if (pickerOverride !== null && phase === 'picker' && csi === '') {
-        const last = pickerOverride.length - 1;
-        if (char === 'A' && selection > 0) selection -= 1;
-        if (char === 'B' && selection < last) selection += 1;
-        out(pickerScreen());
       }
       continue;
     }
     if (char === '\x1b') {
-      // Esc on the Continue screen reopens the Model picker.
+      // Esc on the Continue screen returns to the Welcome screen.
       if (phase === 'continue' && !pasting) {
-        phase = 'picker';
-        out(pickerScreen());
+        phase = 'idle';
+        out(welcomeScreen());
       } else {
         escapeState = 1;
       }
@@ -330,22 +322,27 @@ process.stdin.on('data', (chunk) => {
       pasted += char;
     } else if (char === '\r') {
       // Raw mode delivers Enter as CR; a stray LF must not count as a second Enter.
-      if (unknownStuck) {
+      if (dialogStuck) {
+        logInput({ event: 'enter' });
+        dialogStuck = false;
+        phase = 'idle';
+        out(welcomeScreen());
+      } else if (unknownStuck) {
         logInput({ event: 'enter' });
         if (unknownIgnore > 0) unknownIgnore -= 1;
         else {
           unknownStuck = false;
-          acceptEnter();
+          phase = 'idle';
+          out(welcomeScreen());
         }
-      } else if (phase === 'picker') {
-        logInput({ event: 'enter' });
-        acceptEnter();
       } else if (phase === 'continue') {
         // Enter on the Continue screen starts the next Hour session.
         logInput({ event: 'enter' });
         phase = 'ready';
         out(readyScreen());
       } else {
+        // Enter on the Welcome screen's empty input box starts nothing. Only
+        // screen-changing Enters are logged; the submit Enter is not one.
         const prompt = pending;
         pending = '';
         logInput({ event: 'submit', text: prompt });
@@ -369,21 +366,22 @@ if (mode === 'drift-dialog') {
 if (mode === 'unknown') {
   // No intermediate banner frame: the first stable screen is already the unknown one,
   // so a boot produces exactly one dump signature. Repaints tick the Countdown until
-  // an accepted Enter flips the stub to ready (issue #23); that ready session is the
-  // terminal state, so the normal boot below must not run for this mode.
+  // an accepted Enter flips the stub to the Welcome screen (issue #23); that screen is
+  // the terminal state, so the normal boot below must not run for this mode.
   out(unknownScreen());
   while (unknownStuck) {
     await sleep(200);
     countdownMin = Math.max(1, countdownMin - 1);
-    // Never repaint over the ready screen an Enter may just have produced.
+    // Never repaint over the Welcome screen an Enter may just have produced.
     if (unknownStuck) out(unknownScreen());
   }
 } else {
-  // The degraded ready screen is the drift mode's first stable frame: an intermediate
-  // banner-only frame matches no signature, and a settle poll catching it under load
-  // would dump a second file (issue #31; same rule as the unknown mode above).
+  // The degraded session screen is the drift mode's first stable frame: an
+  // intermediate banner-only frame matches no signature, and a settle poll catching it
+  // under load would dump a second file (issue #31; same rule as the unknown mode
+  // above).
   if (mode !== 'drift') {
-    out(CLEAR + bannerLine + '\r\n' + cwdLine + '\r\n');
+    out(CLEAR + stubDir + '\r\n');
     await sleep(80);
   }
   if (mode === 'needs-login') {
@@ -391,11 +389,10 @@ if (mode === 'unknown') {
     for (;;) await sleep(1_000);
   }
   if (sessionAlive) {
-    model = fixtureCursorName();
     phase = 'ready';
     out(readyScreen());
   } else {
-    phase = 'picker';
-    out(pickerScreen());
+    phase = 'idle';
+    out(welcomeScreen());
   }
 }

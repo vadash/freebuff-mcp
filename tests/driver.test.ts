@@ -37,9 +37,9 @@ const harness = (
 };
 
 describe('FreebuffDriver', () => {
-  it('resolves with the exact scripted answer on the collapsed-picker happy path', async () => {
+  it('resolves with the exact scripted answer on the happy path', async () => {
     const { driver, dir } = harness('happy');
-    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(GLM 5.3 Flash): hello driver');
+    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello driver');
   }, 30_000);
 
   it('retries the submit once, then rejects ack-missing without hanging', async () => {
@@ -47,11 +47,6 @@ describe('FreebuffDriver', () => {
     const started = Date.now();
     await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'ack_missing' });
     expect(Date.now() - started).toBeLessThan(10_000);
-  }, 30_000);
-
-  it('picks a model at the expanded picker and still completes', async () => {
-    const { driver, dir } = harness('happy');
-    await expect(driver.runTask(dir, 'pick me')).resolves.toBe('stub(GLM 5.3 Flash): pick me');
   }, 30_000);
 
   it('rejects process-exited when the agent dies mid-turn', async () => {
@@ -72,15 +67,16 @@ describe('FreebuffDriver', () => {
     expect(driver.needsLogin()).toBe(true);
   }, 30_000);
 
-  it('idles at the replayed picker without pressing enter and probes the balance', async () => {
+  it('idles on the replayed Welcome screen without pressing enter and probes the balance', async () => {
     const { driver, dir } = harness('happy', undefined, { keepAlive: true });
-    expect(await driver.awaitIdle(dir)).toBe('picker');
-    // The stub replays the captured picker verbatim, balance numbers from the fixture
-    // (issue #32 expands it), so the assertions hold the invariants that travel with
-    // any refresh: rows with prices, a parseable balance, and the probe echoing it.
+    expect(await driver.awaitIdle(dir)).toBe('idle');
+    // The stub replays the captured Welcome screen verbatim, balance numbers from the
+    // fixture, so the assertions hold the invariants that travel with any refresh: a
+    // parseable balance, the footer model, and the probe echoing them.
     expect(driver.screenText()).toMatch(FREEBUCKS_BALANCE_REGEX);
     const verdict = classifyScreen(driver.screenText());
-    expect(verdict.entries.length).toBeGreaterThan(0);
+    expect(verdict.welcomeScreen).toBe(true);
+    expect(verdict.activeModel).toBe('DeepSeek V4.1 Flash');
     expect(verdict.freebucksBalance).not.toBeNull();
     const probe = driver.probe();
     expect(probe.freebucksDaily).toBe(verdict.freebucksDaily);
@@ -104,24 +100,20 @@ describe('FreebuffDriver', () => {
     expect(verdict.continueScreen).toBe(true);
     expect(verdict.freebucksBalance).toBeNull();
     expect(verdict.ready).toBe(false);
-    expect(await driver.awaitIdle(dir)).toBe('picker');
+    expect(await driver.awaitIdle(dir)).toBe('idle');
     expect(driver.screenText()).toContain(CONTINUE_PROMPT);
-    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(GLM 5.3 Flash): after continue');
+    await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(DeepSeek V4.1 Flash): after continue');
     expect(driver.screenText()).not.toContain(CONTINUE_PROMPT);
     await driver.stop();
   }, 30_000);
 
-  it('renders env-controlled picker entries and Freebucks balance on the replayed picker', async () => {
+  it('renders the env-controlled Freebucks balance on the replayed Welcome screen', async () => {
     const { driver, dir } = harness('happy', undefined, {
-      stubEnv: {
-        FREEBUFF_STUB_PICKER: JSON.stringify([{ name: 'GLM 5.3 Flash', price: 0 }, { name: 'DeepSeek V4.1 Flash', price: 5 }]),
-        FREEBUFF_STUB_FREEBUCKS: '3/25',
-      },
+      stubEnv: { FREEBUFF_STUB_FREEBUCKS: '3/25' },
       keepAlive: true,
     });
-    expect(await driver.awaitIdle(dir)).toBe('picker');
+    expect(await driver.awaitIdle(dir)).toBe('idle');
     const verdict = classifyScreen(driver.screenText());
-    expect(verdict.entries).toEqual([{ name: 'GLM 5.3 Flash', price: 0 }, { name: 'DeepSeek V4.1 Flash', price: 5 }]);
     expect(verdict.freebucksBalance).toBe(3);
     expect(verdict.freebucksDaily).toBe(25);
     await driver.stop();
@@ -167,7 +159,7 @@ describe('FreebuffDriver', () => {
   it('dumps a degraded Session-in-use dialog frame once per Freeze key', async () => {
     const { driver, dir, configDir } = harness('drift-dialog');
     writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.198' }));
-    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(GLM 5.3 Flash): hello');
+    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello');
     const versionDir = join(configDir, 'screen-dumps', '0.0.198');
     const dumps = readdirSync(versionDir);
     expect(dumps).toHaveLength(1);
@@ -175,8 +167,8 @@ describe('FreebuffDriver', () => {
   }, 30_000);
 
   // Issue #23: after ~10 s of continuously unrecognized Screen the fallback Enter flips
-  // the stub to ready, and the Task completes instead of timing out; the dump is still
-  // written exactly once and the fallback stops at the recognized ready screen.
+  // the stub to the Welcome screen, and the Task completes instead of timing out; the
+  // dump is still written exactly once and the fallback stops at the recognized screen.
   it('falls back to one Enter on a continuously unrecognized screen and completes the task', async () => {
     const logDir = mkdtempSync(join(tmpdir(), 'freebuff-input-'));
     const { driver, dir, configDir } = harness('unknown', { readyMs: 20_000 }, {
@@ -184,13 +176,13 @@ describe('FreebuffDriver', () => {
     });
     writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.0.231' }));
     const started = Date.now();
-    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(GLM 5.3 Flash): hello');
+    await expect(driver.runTask(dir, 'hello')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello');
     const elapsed = Date.now() - started;
     // The first fallback Enter lands after ~10 s of unknown Screen, not at the 3 s
     // throttle floor, and long before the 20 s ready deadline.
     expect(elapsed).toBeGreaterThanOrEqual(9_000);
     expect(elapsed).toBeLessThan(20_000);
-    // Exactly one Enter: the fallback stopped once the ready screen was recognized.
+    // Exactly one Enter: the fallback stopped once the Welcome screen was recognized.
     expect(inputEvents(logDir, 'enter')).toHaveLength(1);
     expect(inputEvents(logDir, 'paste')).toHaveLength(1);
     const versionDir = join(configDir, 'screen-dumps', '0.0.231');

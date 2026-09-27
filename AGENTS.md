@@ -18,7 +18,7 @@ src/supervisor.ts    Supervisor: Queue, Watchdog, state machine, status flags
    │                   src/supervisorLock.ts  one Supervisor per pipe name
    │                   src/workspace.ts       Workspace dir, Junction, prompt preamble
    ▼
-src/driver.ts        Driver: spawn, settle loop, Pick rule (pickModelIndex), keystrokes
+src/driver.ts        Driver: spawn, settle loop, keystrokes
    │ ConPTY (node-pty)
    ▼
 freebuff.exe         Instance

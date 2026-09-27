@@ -40,13 +40,14 @@ freebuff instance survives it.
 
 ## What it costs
 
-freebuff's free usage comes in one-hour **Hour sessions**, each started by
-picking a model and paid for in **Freebucks** from a daily allowance. The
-supervisor runs freebuff in one fixed Workspace directory and mounts your repo
-inside it, so **all repos share one Hour session**: switching repos is free.
-The Hour session keeps ticking while idle, and the supervisor never ends one
-early. When a task finds no Hour session running, it picks a model by the
-Pick rule. The terms are defined in [CONTEXT.md](CONTEXT.md#freebuffs-economy).
+freebuff's free usage comes in one-hour **Hour sessions**, each started by the
+first message you send and paid for in **Freebucks** from a daily allowance.
+The supervisor runs freebuff in one fixed Workspace directory and mounts your
+repo inside it, so **all repos share one Hour session**: switching repos is
+free. The Hour session keeps ticking while idle, and the supervisor never ends
+one early. There is no model selection: freebuff runs the model it remembers
+([ADR-0004](docs/adr/0004-no-model-selection.md)). The terms are defined in
+[CONTEXT.md](CONTEXT.md#freebuffs-economy).
 
 ## Tools
 
@@ -54,7 +55,7 @@ Pick rule. The terms are defined in [CONTEXT.md](CONTEXT.md#freebuffs-economy).
 |---|---|---|
 | `run_prompt` | `dir`, `prompt` | Queues the prompt against the repo `dir` and waits for freebuff's final answer. The supervisor mounts `dir` at the `repo` junction inside the Workspace (swapping it while no task runs; a switch while a task is active is refused). The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in the Workspace and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
-| `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op at the Model picker or with no instance). Refused while a task is active or queued. |
+| `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op on the Welcome screen or with no instance). Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
 | `screen` | none | The running Instance's current Screen, flattened to text — the exact text the supervisor reads. Works in every supervisor state; empty until the Instance first paints. |
 | `doctor` | none | Reports the showing Screen's verdict against its Screen signature: `pass` (every Marker present), `degraded` (Drift has started — threshold still met, some Marker missing, named in `missing`) or `fail` (below threshold). Returns `{ ok, skipped, screen, level, missing }`; `skipped` (with `ok: false`) when no idle instance is running. Advisory: a drift report never blocks a task. |
@@ -63,15 +64,14 @@ Pick rule. The terms are defined in [CONTEXT.md](CONTEXT.md#freebuffs-economy).
 
 | Field | Meaning |
 |---|---|
-| `state` | `stopped`, `spawning`, `picker`, `ready` or `busy` ([Supervisor states](CONTEXT.md#supervisor-states)) |
+| `state` | `stopped`, `spawning`, `idle`, `ready` or `busy` ([Supervisor states](CONTEXT.md#supervisor-states)) |
 | `workspaceDir` | The Workspace — the fixed directory the Instance always runs in |
 | `targetDir` | The repo the `repo` junction currently points at, or `null` before the first task |
 | `queueDepth` | Tasks waiting behind the active one (max 4) |
-| `activeModel` | Model observed on the ready Screen status line; `null` while no model shows (e.g. at the Model picker) |
+| `activeModel` | Model observed on the footer status line; `null` while no Instance runs or the footer is not recognized |
 | `hourSessionMinutesLeft` | Minutes left in the Hour session, from the screen countdown |
-| `freebucksDaily` | Freebucks line from the screen, as text |
+| `freebucksDaily` | Daily Freebucks allowance parsed from the screen's balance line (e.g. 25); `null` while no Instance runs or no balance is on screen |
 | `needsLogin` | freebuff demands `freebuff login`; never retried automatically |
-| `updatePending` | A newer freebuff CLI is installed than the one running |
 | `screenDrift` | The installed CLI version has an unknown or degraded Screen on record (a [Screen dump](#screen-dumps)) that the fixture corpus does not cover yet; clears when an update changes the installed version or the dump is promoted into the corpus |
 | `instancePid` | OS pid of the running freebuff Instance, or `null` |
 

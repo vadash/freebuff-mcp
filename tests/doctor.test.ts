@@ -1,6 +1,6 @@
 // Issue #29: doctor keeps no marker table of its own — its verdict is the recognition
 // function's output, so these tests run at that seam over the corpus fixtures: an
-// intact frame reports pass, a drifted picker title (only weak Markers left) reports
+// intact frame reports pass, a drifted info-box line (only weak Markers left) reports
 // fail, and a drifted Countdown reports degraded, naming the Marker.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -14,7 +14,8 @@ const screen = async (name: string): Promise<string> =>
 
 describe('doctor (issue #29: the recognition seam)', () => {
   it.each([
-    ['0.0.199/picker-expanded.ansi', 'Model picker'],
+    ['0.1.0/welcome.ansi', 'Welcome screen'],
+    ['0.1.0/ready.ansi', 'ready'],
     ['0.0.199/ready.ansi', 'ready'],
     ['0.0.199/continue.ansi', 'Continue'],
     ['0.0.198/session-in-use.ansi', 'Session-in-use dialog'],
@@ -27,12 +28,12 @@ describe('doctor (issue #29: the recognition seam)', () => {
     expect(recognizeScreen(text)).toEqual({ screen: 'ready', level: 'degraded', missing: ['COUNTDOWN_REGEX'] });
   });
 
-  it('reports fail on a drifted picker title: only weak Markers are left', async () => {
-    const text = (await screen('0.0.199/picker-expanded.ansi')).replace('Start coding for free', 'Pick a model');
-    const report = recognizeScreen(text);
-    expect(report.screen, 'the picker signature no longer recognizes the frame').toBeNull();
-    expect(report.level).toBe('fail');
-    expect(report.missing).toEqual([]);
+  it('reports degraded on a drifted Welcome info box: ready still matches on the input box', async () => {
+    // The Welcome and session screens share the input box, so a reworded info box
+    // degrades the frame into a ready-without-Countdown report — Drift on record, the
+    // input box (and every Task) still recognized.
+    const text = (await screen('0.1.0/welcome.ansi')).replace('Your first message starts the session.', 'Pick a model below');
+    expect(recognizeScreen(text)).toEqual({ screen: 'ready', level: 'degraded', missing: ['COUNTDOWN_REGEX'] });
   });
 
   it('reports fail on a Screen matching no known screen', () => {

@@ -18,48 +18,51 @@ term lives: [AGENTS.md](AGENTS.md#code-map).
   pid from its own PTY. Killing it is cheap because the Hour session resumes
   on relaunch. _Avoid:_ "session" (for the process).
 - **Session-in-use dialog**: freebuff's claim check at startup, shown when the
-  Hour session is still claimed elsewhere (seen after an Instance was killed
-  mid-session). `Take over` is the recovery path. Older CLIs worded it
-  "Freebuff is already running". _Avoid:_ "single-instance dialog".
+  Hour session is still claimed elsewhere. `Take over` is the recovery path.
+  Older CLIs worded it "Freebuff is already running" or "Session already in
+  use"; from 0.1.0 a concurrent spawn takes the Hour session over silently —
+  the first Instance's Countdown just vanishes. _Avoid:_ "single-instance
+  dialog".
 
 ### Freebuff's economy
 
 - **Hour session**: freebuff's one-hour, wall-clock usage window. It starts
-  when a model is picked at the Model picker, is locked to the directory the
-  Instance was started in, keeps ticking whatever we do, and resumes when
-  freebuff is relaunched in that directory. The Supervisor never ends one
-  early. _Avoid:_ "trial session", "trial clock",
+  with the Instance's first message from the Welcome screen, is locked to the
+  directory the Instance was started in, keeps ticking whatever we do, and
+  resumes when freebuff is relaunched in that directory. The Supervisor never
+  ends one early. _Avoid:_ "trial session", "trial clock",
   bare "session".
 - **Countdown**: the minutes-left marker on the Screen's status line
   (`7h 12m left`, `1h left`, `59m left`, `2:58 left`), i.e. minutes left in the
   Hour session.
-- **Freebucks**: freebuff's daily allowance (25 or 40). Starting an Hour
-  session costs the picked model's price (e.g. 0/5/10).
+- **Freebucks**: freebuff's daily allowance (25 or 40), shown on the session
+  screen's account box as `<remaining>/<daily> Freebucks remaining`. From 0.1.2
+  the Welcome screen no longer shows it.
 - **Freebucks reset**: the moment the daily allowance refreshes: 21:00 UTC
-  (00:00 Istanbul), measured from the picker's `resets in` countdown. The
-  picker's "+15 Freebucks every Pacific day" perk line notwithstanding, the
-  measured allowance clock is 21:00 UTC, not Pacific midnight.
+  (00:00 Istanbul). The Welcome screen's "+15 Freebucks every Pacific day"
+  perk line notwithstanding, the measured allowance clock is 21:00 UTC, not
+  Pacific midnight.
   _Avoid:_ "Pacific midnight" (for the reset).
 - **Streak keeper**: the daily routine that keeps freebuff's login streak
   alive: if the Chat store shows no activity in the current allowance window,
   it runs one small read-only Task; otherwise it does nothing. The keeper
   never ends an Hour session and shuts down only a Supervisor it started
   itself.
-- **Model picker**: the screen titled "Start coding for free" that lists models
-  and prices. Picking one starts an Hour session. The Instance idles here when
-  no Hour session is running.
-- **Pick rule**: how the Driver picks at the Model picker, in order: the first
-  deepseek row the Freebucks balance can afford (an unreadable balance counts
-  as unaffordable), else the first glm row, else the first mimo row, else the
-  top row. Names match case-insensitively, in displayed order. Re-applied on
-  every Task that finds the picker. _Avoid:_ "model strategy", "preferred model".
-- **Active model**: the model an Hour session runs with, shown before the first
-  `·` on the ready status line. Re-derived from the Screen on every read,
-  never stored; null whenever no Hour session is running.
-  _Avoid:_ "selected model", "current model".
-- **Continue screen**: shown after an Hour session expires ("press Enter to
-  continue"). Enter starts the next Hour session. The Supervisor presses it
-  only when a task arrives.
+- **Welcome screen**: the screen the Instance idles on when no Hour session is
+  running: logo, account info box ("Your first message starts the session."),
+  and the ready input box. Submitting a Task there is the first message: it
+  starts the Hour session. There is no model choice.
+  _Avoid:_ "model picker", "start screen".
+- **Active model**: the model shown before the first `·` on the status line,
+  whenever the Instance runs — session or not. Freebuff remembers the model;
+  the supervisor never changes it. Re-derived from the Screen on every read,
+  never stored; null when the Instance is not running.
+  _Avoid:_ "selected model", "current model", "picked model".
+- **Continue screen**: the out-of-credits claim check — a credits summary
+  (remaining balance, spending rule) ending in "Press Enter to continue".
+  Enter starts the next Hour session; the Supervisor presses it only when a
+  task arrives. Plain expiry with balance remaining shows no such dialog: the
+  Countdown vanishes and the screen reverts to the Welcome look.
 
 ### Work
 
@@ -128,9 +131,8 @@ term lives: [AGENTS.md](AGENTS.md#code-map).
   signal, never a version bump alone.
 - **Fallback Enter**: while the Instance starts, a Screen that stays
   unrecognized for ~10 s gets one Enter, then another every ~10 s until a
-  recognized screen shows. Accepted cost: if the unrecognized screen is a
-  drifted Model picker, Enter starts an Hour session on the highlighted model.
-  _Avoid:_ "fallback pick".
+  recognized screen shows. Accepted cost: a stray Enter on an unrecognized
+  screen lands in the input box and submits nothing.
 
 _Avoid:_ "park", "parked", "parking". The Instance idles; it is never parked,
 and `/end-session` is never sent.
@@ -138,22 +140,24 @@ and `/end-session` is never sent.
 ## Supervisor states
 
 ```
-stopped ──run_prompt──► spawning ──► picker ──Task arrives, model picked──► busy ⇄ ready
+stopped ──run_prompt──► spawning ──► idle ──Task arrives, first message starts the session──► busy ⇄ ready
                                   ▲                                     │
                                   └──── Hour session expired ◄──────────┘
 ```
 
-- `spawning` lands in `picker` (no Hour session for this directory) or `ready`
+- `spawning` lands in `idle` (no Hour session for this directory) or `ready`
   (an unexpired Hour session resumed).
 - `ready ──Task──► busy ──Turn end──► ready`.
-- After expiry the Continue screen counts as `picker`; the next Task presses
-  Enter and goes to `busy`.
+- After expiry the screen reverts to the Welcome look (no Countdown) and counts
+  as `idle`; the next Task is the first message of a fresh Hour session. The
+  Continue screen (out of credits) also counts as `idle`; there the next Task
+  presses Enter first.
 - Kill, crash, freeze or cancel respawns the Instance back through `spawning`.
 - A spawn failure (e.g. `needs_login`) returns to `stopped`.
 
 - `stopped`: no Instance.
 - `spawning`: Instance starting in the Workspace.
-- `picker`: Instance at the Model picker or the Continue screen; no Hour
+- `idle`: Instance at the Welcome screen or the Continue screen; no Hour
   session is ticking for this directory.
 - `ready`: Hour session running, input box idle, Queue empty.
 - `busy`: a Task's Turn is running.

@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
@@ -13,11 +13,9 @@ import {
   projectKey,
   type TurnBaseline,
 } from '../src/protocol/chatStore.ts';
-import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, PROJECTS_DIRNAME, READY_PROMPT, mentionsSingleInstance } from '../src/protocol/markers.ts';
-import { classifyScreen } from '../src/protocol/screen.ts';
-import { recognizeScreen } from '../src/protocol/signatures.ts';
+import { CHATS_DIRNAME, LOGIN_REQUIRED, PROJECTS_DIRNAME, READY_PROMPT, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { workspaceDirFor } from '../src/workspace.ts';
-import { captureFixturesDir, flatDump, RealCli, realChatsRoot, snapshotChats, unaffordablePickReason } from './helpers/capture.ts';
+import { captureFixturesDir, RealCli, realChatsRoot, snapshotChats } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
 
 const gateOpen = process.env.FREEBUFF_REAL_SMOKE === '1';
@@ -25,12 +23,13 @@ const captureRequested = process.env.FREEBUFF_CAPTURE === '1';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const captureCwd = join(repoRoot, '.probe', 'capture');
 const captureRawDir = join(captureCwd, 'raw');
-// Session expiry costs a real hour of wall clock; the expiring countdown shows earlier.
-const EXPIRY_WAIT_MS = 55 * 60_000;
+// Session expiry costs a real hour of wall clock. The mm:ss countdown shows only in
+// the last 5 minutes (0.1.0 CLI: `<5min` branch of the formatter), so the wait must
+// straddle the whole hour with margin on both sides.
+const EXPIRY_WAIT_MS = 65 * 60_000;
 const COUNTDOWN_LINE = /\d+(?:m|h) left|\d+:\d\d left/;
-// ADR-0001 #6: first affordable deepseek, else first glm. The 2026-09 service update
-// shrank the picker to a single GLM 5.3 Flash row, so the rule lands on it.
-const expectedModel = 'GLM 5.3 Flash';
+// ADR-0004: the model is whatever the live CLI remembers, never chosen by the
+// supervisor; the smoke asserts only that the footer model is reported.
 const trivialPrompt = 'Reply with exactly one word and nothing else: ping';
 // Issue #18: a ~40 KB multi-line prompt, under the Big payload threshold, so it goes in
 // as one bracketed paste; the Chat store must keep it intact (the 2026-09 CLI prefixes a
@@ -40,7 +39,9 @@ const bigPrompt = [
   ...Array.from({ length: 560 }, (_, i) => `${String(i + 1).padStart(4, '0')} filler line for the bracketed-paste smoke, ignore it entirely.`),
   'Reply with exactly one word and nothing else: pong',
 ].join('\n');
-const runTimeoutMs = 120_000;
+// A trivial Turn normally takes well under a minute; the pipe deadline only binds when
+// the service is slow (the 2026-09-27 window needed >2 min for one word).
+const runTimeoutMs = 300_000;
 
 const pidAlive = (pid: number): boolean => {
   try {
@@ -115,7 +116,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     expect(done.answer).toBe(chatStoreAnswer(configDir, chatDir));
 
     const ready = await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
-    expect(ready.activeModel, `live service picked a model other than ${expectedModel}`).toBe(expectedModel);
+    expect(ready.activeModel, 'the footer model was not reported at ready').toEqual(expect.any(String));
 
     const big = await requestPipe<{ ok: boolean; answer?: string; error?: string }>(
       pipeName,
@@ -147,11 +148,11 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       150_000,
     );
     expect(respawned.ok, respawned.error).toBe(true);
-    await pollStatus(pipeName, { state: 'ready', activeModel: expectedModel, queueDepth: 0 });
+    await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     const secondPid = await statusPid();
     expect(secondPid).not.toBe(firstPid);
     expect(pidAlive(secondPid), `respawned freebuff process ${secondPid} is not alive`).toBe(true);
-  }, 300_000);
+  }, 600_000);
 
   it.skipIf(!captureRequested)('captures the real protocol screens as fixtures (set FREEBUFF_CAPTURE=1)', async () => {
     mkdirSync(captureCwd, { recursive: true });
@@ -192,86 +193,37 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     // resolved from the real profile's metadata — never a hardcoded version.
     const screenFixturesDir = captureFixturesDir(configDir);
     try {
-      // A killed Instance's Hour session persists, so the CLI either lands on the picker
-      // (no Hour session) or straight in the resumed ready box (Hour session still ticking).
+      // Landing screens: the Welcome screen (no Hour session), a resumed ready box (Hour
+      // session still ticking after a kill), the login gate, or the Session-in-use
+      // dialog a stale claim raises.
       await cli.waitScreen(
-        'picker or resumed ready box',
-        (t) => classifyScreen(t).picker !== null || (t.includes(READY_PROMPT) && COUNTDOWN_LINE.test(t)) || t.includes(LOGIN_REQUIRED),
+        'welcome, resumed ready box, login gate, or Session-in-use dialog',
+        (t) => t.includes(READY_PROMPT) || t.includes(LOGIN_REQUIRED) || mentionsSingleInstance(t),
         180_000,
       );
       if (cli.text().includes(LOGIN_REQUIRED)) throw new Error('freebuff is not logged in; log in and rerun the capture');
-      const resumed = classifyScreen(cli.text()).picker === null;
-
-      if (!resumed) {
-        // Issue #32: the picker is born collapsed on 0.0.199+; `v` expands it (harmless
-        // when already expanded). The fixture must hold the full model list, so the pick
-        // rule's affordability gate gets real rows to test against (story 25).
-        cli.type('v');
-        await cli.waitScreen('expanded model list', (t) => classifyScreen(t).entries.length >= 2, 30_000);
-        const picker = cli.text();
-        if (!/\d+ Freebucks\/hr/.test(picker) || !/\d+\/\d+ Freebucks daily/.test(picker)) {
-          throw new Error(`picker is missing price/balance wording; last screen:\n${flatDump(picker)}`);
-        }
-        save('picker-expanded');
-
-        // The pick rule against those real rows (issue #32): its choice must be
-        // affordable, and an unparseable balance must have made it skip the paid
-        // model entirely — the same gate tests/corpus.test.ts asserts in CI.
-        const verdict = classifyScreen(cli.text());
-        if (verdict.entries.length < 2) {
-          throw new Error(`expanded picker shows ${verdict.entries.length} row(s); expected the full model list; last screen:\n${flatDump(cli.text())}`);
-        }
-        const unsafe = unaffordablePickReason(verdict);
-        if (unsafe !== null) {
-          throw new Error(`${unsafe}; last screen:\n${flatDump(cli.text())}`);
-        }
-
-        // Ready box with the Countdown. Navigate to a zero-cost row before pressing Enter:
-        // the cursor rests on the remembered model, which a previous manual session may
-        // have left on the paid DeepSeek row. A paid pick aborts hard.
-        const cursorRow = (text: string): string => text.split('\n').find((line) => line.includes('›')) ?? '';
-        for (let presses = 0; presses < 5 && /deepseek/i.test(cursorRow(cli.text())); presses++) {
-          cli.type('\x1b[A');
-          await sleep(400);
-        }
-        const picked = cursorRow(cli.text());
-        if (!/glm|mimo|solar/i.test(picked)) {
-          throw new Error(`picker cursor on unexpected row ("${picked.trim()}"); refusing to spend Freebucks`);
-        }
-        cli.type('\r');
-        const statusScreen = await cli.waitScreen('session status line', (t) => COUNTDOWN_LINE.test(t), 180_000);
-        const modelLine = statusScreen.split('\n').find((line) => COUNTDOWN_LINE.test(line)) ?? '';
-        if (/deepseek/i.test(modelLine)) {
-          throw new Error(`picker cursor sat on a paid model ("${modelLine.trim()}"); refusing to spend Freebucks`);
-        }
-        await cli.waitScreen('ready input box', (t) => t.includes(READY_PROMPT), 120_000);
+      if (mentionsSingleInstance(cli.text())) {
+        await recoverStaleLockDialog(cli, 'spawn');
+        await cli.waitScreen('welcome or resumed ready box', (t) => t.includes(READY_PROMPT), 120_000);
+      }
+      // The first message starts the Hour session, so the idle screen is the input box
+      // without a Countdown. Name the fixture by which one showed.
+      if (COUNTDOWN_LINE.test(cli.text())) {
+        save('ready');
+      } else {
+        save('welcome');
       }
 
-      // Concurrent second spawn against the Instance now holding an Hour session
-      // (story 26): the corpus records what this CLI shows — the dialog fixture when it
-      // appears, an explicit no-dialog record when it does not (0.0.199 raised none
-      // within 120 s). The dialog is recognized through the shared signature table, and
-      // the unknown watch dumps anything else a second spawn might show.
-      const second = new RealCli(captureCwd);
-      second.startUnknownWatch(join(captureCwd, 'unknown'));
-      try {
-        await second.waitScreen('Session-in-use dialog', (t) => recognizeScreen(t).screen === 'Session-in-use dialog', 120_000);
-        second.saveFixture(screenFixturesDir, captureRawDir, 'single-instance');
-      } catch (error) {
-        mkdirSync(captureRawDir, { recursive: true });
-        const note = join(captureRawDir, 'second-spawn-no-dialog.txt');
-        writeFileSync(
-          note,
-          `${new Date().toISOString()} concurrent second spawn: no Session-in-use dialog within 120s (${firstErrorLine(error)})\nlast screen:\n${flatDump(second.text())}\n`,
-        );
-        console.warn(`[capture] no Session-in-use dialog within 120s; recorded ${note}`);
-      } finally {
-        second.kill();
-      }
-
+      // The first message starts the Hour session; capture the ready box with its
+      // Countdown once the Turn ends.
       await runTurn(trivialPrompt);
       await cli.waitScreen('ready box with countdown', (t) => t.includes(READY_PROMPT) && COUNTDOWN_LINE.test(t) && !t.includes('working'), 60_000);
       save('ready');
+
+      // No concurrent-second-spawn probe: from 0.1.0 a second spawn takes the Hour
+      // session over silently (no Session-in-use dialog), so the probe only demolished
+      // the session this run is waiting to see expire. The dialog fixtures stay from
+      // the 0.0.193/0.0.198 corpora.
 
       // Error screen: an unknown slash command is a deterministic CLI-level error, unlike
       // a failing shell command, which the model tends to neutralize and render as success.
@@ -284,99 +236,28 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       await cli.flush();
       save('error');
 
-      // The expiring countdown (mm:ss format) and the Continue screen cost a real hour.
+      // The expiring countdown (mm:ss format, last 5 minutes of the hour) and the
+      // post-expiry look cost a real hour.
       try {
         await cli.waitScreen('expiring countdown', (t) => /\d+:\d\d left/.test(t), EXPIRY_WAIT_MS);
         save('countdown-expiring');
       } catch (error) {
         console.warn(`[capture] countdown-expiring skipped: ${firstErrorLine(error)}`);
       }
-      await cli.waitScreen('continue screen', (t) => t.includes('Session ended') && t.includes('Press Enter to continue'), 20 * 60_000);
-      save('continue');
+      // 0.1.0 expiry with remaining balance: the Countdown vanishes and the box reverts
+      // to `Your first message starts the session` — no credits dialog (that one is the
+      // out-of-credits claim check), no `Session ended`. The post-expiry look must
+      // recognize as the Welcome screen, because the Supervisor submits the next task
+      // straight into it.
+      await cli.waitScreen(
+        'post-expiry welcome',
+        (t) => t.includes('Your first message starts the session') && !COUNTDOWN_LINE.test(t),
+        30 * 60_000,
+      );
+      save('welcome-expired');
     } finally {
-      // Never press Enter on the Continue screen: that would start a fresh Hour session.
       cli.kill();
     }
-  }, 5_400_000);
+  }, 6_000_000);
 
-  // The low-Freebucks screen needs a naturally spent-down daily balance (0/25 or 0/40;
-  // billing is anti-churn, so sessions ended early deduct nothing and draining
-  // programmatically is impossible). This opt-in variant (FREEBUFF_LOW_CAPTURE=1) only
-  // DETECTS: it reaches the picker and captures it only when the parsed balance cannot
-  // cover the cheapest paid model; otherwise it warns and writes nothing. The maintainer
-  // runs it on a spent-down day.
-  it.skipIf(!captureRequested || process.env.FREEBUFF_LOW_CAPTURE !== '1')('captures the low-Freebucks screen (set FREEBUFF_LOW_CAPTURE=1)', async () => {
-    mkdirSync(captureCwd, { recursive: true });
-    const screenFixturesDir = captureFixturesDir(configDir);
-    const cli = new RealCli(captureCwd);
-    cli.startUnknownWatch(join(captureCwd, 'unknown'));
-    const DEEPSEEK_PRICE = 5;
-    const balanceLeft = (text: string): number | null => {
-      const match = /(\d+)\/\d+ Freebucks daily/.exec(text);
-      return match === null ? null : Number(match[1]);
-    };
-    const navigateToDeepSeek = async (): Promise<boolean> => {
-      for (let presses = 0; presses < 8 && !/›.*deepseek/i.test(cli.text()); presses++) {
-        if (presses === 2) cli.type('v'); // expand a collapsed picker; harmless when expanded
-        cli.type('\x1b[B');
-        await sleep(500);
-        await cli.flush();
-      }
-      return /›.*deepseek/i.test(cli.text());
-    };
-    const screenDump = (): string => flatDump(cli.text());
-    const inReadyBox = (t: string): boolean => t.includes(READY_PROMPT) && COUNTDOWN_LINE.test(t);
-    try {
-      // Landing screens, in the wild: picker, login gate, Continue screen (spent session),
-      // single-instance dialog (stale lock), or the resumed ready box of a session that is
-      // still ticking (Take over after a killed instance resumes it). Leaves the CLI at
-      // the picker, ending any live Hour session on the way via the End session button.
-      const toPicker = async (): Promise<void> => {
-        await cli.waitScreen(
-          'picker, resumed session, dialog, or continue screen',
-          (t) => classifyScreen(t).picker !== null || t.includes(LOGIN_REQUIRED) || t.includes('Press Enter to continue') || mentionsSingleInstance(t) || inReadyBox(t),
-          180_000,
-        );
-        if (cli.text().includes(LOGIN_REQUIRED)) throw new Error('freebuff is not logged in; log in and rerun the capture');
-        if (mentionsSingleInstance(cli.text())) {
-          await recoverStaleLockDialog(cli, 'spawn');
-          await toPicker();
-        } else if (cli.text().includes('Press Enter to continue')) {
-          cli.type('\x1b');
-          await cli.waitScreen('model picker after Esc', (t) => classifyScreen(t).picker !== null, 30_000);
-        } else if (inReadyBox(cli.text())) {
-          if (!cli.clickText('End session')) throw new Error('live Hour session but no End session button on screen');
-          await cli.waitScreen('model picker after End session', (t) => classifyScreen(t).picker !== null, 60_000);
-        }
-      };
-      await toPicker();
-      await sleep(1_000);
-      await cli.flush();
-      const balance = balanceLeft(cli.text());
-      if (balance === null) throw new Error(`could not parse the Freebucks balance; last screen:\n${screenDump()}`);
-      if (balance >= DEEPSEEK_PRICE) {
-        console.warn(`[capture] balance is ${balance}/day, still covering the ${DEEPSEEK_PRICE}-Freebucks model — the low-Freebucks screen needs a spent-down day (0/25 or 0/40); nothing written`);
-        return;
-      }
-      cli.saveFixture(screenFixturesDir, captureRawDir, 'low-freebucks');
-      // The TUI may hide or disable the unaffordable row instead of refusing the pick;
-      // try the pick only if the row is still there, and keep whatever renders.
-      if (await navigateToDeepSeek()) {
-        const beforePick = cli.text();
-        cli.type('\r');
-        try {
-          await cli.waitScreen('low-freebucks refusal', (t) => t !== beforePick, 45_000);
-          await sleep(2_000);
-          await cli.flush();
-        } catch (error) {
-          console.warn(`[capture] refusal screen unchanged: ${firstErrorLine(error)}`);
-        }
-        cli.saveFixture(screenFixturesDir, captureRawDir, 'low-freebucks-refused');
-      } else {
-        console.warn('[capture] DeepSeek row not selectable at exhausted balance; the picker fixture documents the hiding');
-      }
-    } finally {
-      cli.kill();
-    }
-  }, 600_000);
 });

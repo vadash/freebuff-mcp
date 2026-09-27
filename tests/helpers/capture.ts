@@ -13,10 +13,10 @@ import { SCREEN_COLS, SCREEN_ROWS } from '../../src/config.ts';
 import { sleep } from '../../src/util.ts';
 import { CHATS_DIRNAME, LOG_FILENAME, METADATA_FILENAME, PROJECTS_DIRNAME } from '../../src/protocol/markers.ts';
 import { projectKey, type ChatDirSnapshot } from '../../src/protocol/chatStore.ts';
-import { CliTerminalScreen, type ScreenVerdict } from '../../src/protocol/screen.ts';
+import { CliTerminalScreen } from '../../src/protocol/screen.ts';
 import { recognizeScreen } from '../../src/protocol/signatures.ts';
 import { metadataVersion } from '../../src/protocol/screenDump.ts';
-import { defaultDriverOptions, pickModelIndex } from '../../src/driver.ts';
+import { defaultDriverOptions } from '../../src/driver.ts';
 
 // Real TUIs repaint in bursts (spinner, status line); require the wanted screen to hold
 // still briefly so fixtures capture the settled frame.
@@ -43,21 +43,6 @@ export const captureFixturesDir = (configDir: string): string => {
     throw new Error(`cannot read the installed freebuff version from ${join(configDir, METADATA_FILENAME)}; refusing to pick a corpus folder`);
   }
   return fileURLToPath(new URL(`../fixtures/screen/${version}/`, import.meta.url));
-};
-
-// Issue #32: the pick rule's affordability gate over a parsed picker verdict, declared
-// once so the live capture flow and the CI corpus check can never disagree (story 25).
-// Returns why the choice is unsafe, or null when it is affordable; an unparseable
-// balance must have made the rule skip the paid model entirely (story 11 of #25).
-export const unaffordablePickReason = (verdict: ScreenVerdict): string | null => {
-  const chosen = verdict.entries[pickModelIndex(verdict.entries, verdict.freebucksBalance)];
-  if (chosen === undefined) return 'no picker rows parsed';
-  if (verdict.freebucksBalance === null) {
-    return /deepseek/i.test(chosen.name) ? `pick rule chose the paid model "${chosen.name}" with no parseable balance` : null;
-  }
-  return chosen.price > verdict.freebucksBalance
-    ? `pick rule chose "${chosen.name}" at ${chosen.price} Freebucks/hr over a balance of ${verdict.freebucksBalance}`
-    : null;
 };
 
 export class RealCli {
@@ -141,25 +126,6 @@ export class RealCli {
   stopUnknownWatch(): void {
     clearInterval(this.watchdog);
     this.watchdog = undefined;
-  }
-
-  /**
-   * Clicks the screen cell holding the first occurrence of `label` (e.g. the `✕ End
-   * session` status-bar button) via an SGR mouse press/release pair. Coordinates are
-   * 1-based; the flattened text is a SCREEN_ROWS x SCREEN_COLS grid, matching what the
-   * TUI laid out. Returns false when the label is not on screen.
-   */
-  clickText(label: string): boolean {
-    const lines = this.text().split('\n').slice(0, SCREEN_ROWS);
-    for (let row = 0; row < lines.length; row++) {
-      const col = lines[row]!.indexOf(label);
-      if (col < 0) continue;
-      const x = col + 1 + Math.floor(label.length / 2);
-      const y = row + 1;
-      this.pty.write(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`);
-      return true;
-    }
-    return false;
   }
 
   /** Resolves once `want` holds and the screen has stopped repainting; fails with the last screen. */
