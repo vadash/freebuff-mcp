@@ -1,6 +1,7 @@
 // Screen classification over a real VT emulator (@xterm/headless, MIT); the CLI's rendering
 // exceeds hand-rolled VT support, and raw PTY history is not the visible screen.
 import headless from '@xterm/headless';
+import { homedir } from 'node:os';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
 import { COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, PICKER_TITLE, PRICE_REGEX, STATUS_SEPARATOR } from './markers.ts';
 import { recognizeScreen } from './signatures.ts';
@@ -110,7 +111,13 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
 
   // Strict banner parse: ready without the expected dir line yields null and the
   // Driver fails dir_mismatch rather than working in the wrong directory.
-  const banner = expectedDir !== undefined && lines.some((line) => line.includes(expectedDir)) ? expectedDir : null;
+  // freebuff tilde-compresses dirs under the user profile in its dir line
+  // (`~\AppData\...`), so expand before the literal match or every home-under
+  // workspace (e.g. %TEMP%) fails dir_mismatch.
+  const expandTilde = (line: string): string =>
+    line.replace(/(^|\s)~(?=[\\/])/, (_match, before: string) => before + homedir());
+  const banner =
+    expectedDir !== undefined && lines.some((line) => expandTilde(line).includes(expectedDir)) ? expectedDir : null;
   const balance = FREEBUCKS_BALANCE_REGEX.exec(text);
   const left = FREEBUCKS_LEFT_REGEX.exec(text);
   return {

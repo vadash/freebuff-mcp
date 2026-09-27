@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { COUNTDOWN_REGEX, KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { pickModelIndex } from '../src/driver.ts';
@@ -41,6 +42,13 @@ describe('classifyScreen', () => {
     const text = await screen('synthetic/banner-ready.ansi');
     expect(classifyScreen(text, 'C:/work/demo-app')).toEqual(verdict({ ready: true, banner: 'C:/work/demo-app' }));
     expect(classifyScreen(text)).toEqual(verdict({ ready: true }));
+    expect(classifyScreen(text, 'C:/elsewhere')).toEqual(verdict({ ready: true }));
+  });
+
+  it('expands the tilde-compressed home dir in the banner line', async () => {
+    const text = (await screen('synthetic/banner-ready.ansi')).replace('C:/work/demo-app', '~/work/demo-app');
+    const expected = homedir() + '/work/demo-app';
+    expect(classifyScreen(text, expected)).toEqual(verdict({ ready: true, banner: expected }));
     expect(classifyScreen(text, 'C:/elsewhere')).toEqual(verdict({ ready: true }));
   });
 
