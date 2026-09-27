@@ -10,8 +10,8 @@ The repository is named `freebuff-mcp` after the upstream project it adapts;
 the package and MCP server are named `freebuff-supervisor` because
 `freebuff-mcp` is taken.
 
-- Design and its reasons: [ADR-0001](docs/adr/0001-supervised-freebuff-cli.md), [ADR-0002](docs/adr/0002-tolerant-screen-signatures.md) (tolerant Screen recognition, accumulating corpus)
-- Vocabulary (Instance, Hour session, Bound directory, ...): [CONTEXT.md](CONTEXT.md)
+- Design and its reasons: [ADR-0001](docs/adr/0001-supervised-freebuff-cli.md), [ADR-0002](docs/adr/0002-tolerant-screen-signatures.md) (tolerant Screen recognition, accumulating corpus), [ADR-0003](docs/adr/0003-workspace-junction-replaces-bind.md) (workspace junction replaces bind)
+- Vocabulary (Instance, Hour session, Workspace, Junction, ...): [CONTEXT.md](CONTEXT.md)
 
 > This README describes the code as it is today. Where ADR-0001 decides
 > something different, see [Known issues](#known-issues).
@@ -44,8 +44,7 @@ freebuff instance survives it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `bind` | `dir` | Binds freebuff to an existing directory and spawns the Instance in it. Refused while a task runs; purges queued tasks. Same directory is a no-op. The Bind lock refuses a switch while more than 30 minutes of the Hour session remain; a missing or drifted Countdown leaves the minutes unknown, which never enforces the lock. |
-| `run_prompt` | `dir`, `prompt` | Queues the prompt and waits for freebuff's final answer. `dir` must equal the bound directory. The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in that directory and passed by reference. |
+| `run_prompt` | `dir`, `prompt` | Queues the prompt against the repo `dir` and waits for freebuff's final answer. The supervisor mounts `dir` at the `repo` junction inside the Workspace (swapping it while no task runs; a switch while a task is active is refused). The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in the Workspace and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
 | `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op at the Model picker or with no instance). Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
@@ -57,7 +56,8 @@ freebuff instance survives it.
 | Field | Meaning |
 |---|---|
 | `state` | `stopped`, `spawning`, `picker`, `ready` or `busy` |
-| `boundDir` | Bound directory, or `null` |
+| `workspaceDir` | The Workspace — the fixed directory the Instance always runs in |
+| `targetDir` | The repo the `repo` junction currently points at, or `null` before the first task |
 | `queueDepth` | Tasks waiting behind the active one (max 4) |
 | `activeModel` | Model observed on the ready Screen status line; `null` while no model shows (e.g. at the Model picker) |
 | `hourSessionMinutesLeft` | Minutes left in the Hour session, from the screen countdown |
@@ -70,8 +70,8 @@ freebuff instance survives it.
 ### Failures
 
 Failed calls return `isError: true` with a message. Driver failures read
-`freebuff driver failure: <reason>`; bind rejections read `bind rejected: <reason>`;
-watchdog failures read `watchdog failure: <reason>: <detail>` followed by the
+`freebuff driver failure: <reason>`; watchdog failures read
+`watchdog failure: <reason>: <detail>` followed by the
 last screen lines. After a watchdog failure the supervisor respawns freebuff
 (the Hour session resumes) and the next queued task runs normally. The prompt
 is never resent: a half-run coding task is not safe to repeat.
@@ -79,15 +79,14 @@ is never resent: a half-run coding task is not safe to repeat.
 | Reason | Meaning |
 |---|---|
 | `needs_login` | Run `freebuff login` yourself; never retried automatically. |
-| `dir_mismatch` | freebuff came up in a different directory than the bound one. |
+| `dir_mismatch` | freebuff came up in a different directory than the Workspace. |
 | `ready_timeout` | freebuff never reached its input box (includes a screen excerpt). |
 | `ack_missing` | freebuff did not record the prompt, even after one retry. |
 | `no_answer` | The turn ended without a final answer. freebuff stays up and the next queued task runs. |
-| `process_exited` | freebuff exited while starting up (e.g. during `bind`). |
+| `process_exited` | freebuff exited while starting up. |
 | `frozen` | Watchdog: neither the screen (ignoring the countdown and Freebucks lines) nor the chat log changed for 3 minutes. |
 | `crashed` | Watchdog: freebuff exited mid-task. |
 | `deadline` | Watchdog: the task was still running 20 minutes after it started, even if it kept producing output. |
-| `bound_dir_locked` | Switching to a different directory is refused while more than 30 minutes of the Hour session remain. The message carries the Bound directory and the minutes until it unlocks. The escape hatch is restarting the supervisor (the Bound directory is not persisted). Re-binding the same directory is a no-op; with no Hour session running, or 30 minutes or less left, switching is allowed. |
 
 A full queue fails with `isError: true` and the text `{ "busy": true, "position": N }`.
 
@@ -96,13 +95,13 @@ A full queue fails with `isError: true` and the text `{ "busy": true, "position"
 While a task runs, screen lines matching freebuff's known error strings (e.g.
 `Command not found: …`) are appended to
 `%LOCALAPPDATA%\freebuff-supervisor\errors.jsonl`, one JSON line per entry with
-`time`, `boundDir` and the matched `lines`. A line is logged once per task. The
+`time`, `workspace` and the matched `lines`. A line is logged once per task. The
 log is for later analysis only: nothing acts on it, and the task carries on.
 Set `FREEBUFF_ERROR_LOG` in the supervisor's environment to write it elsewhere.
 
 ### Screen dumps
 
-While starting a task or binding, a screen that matches no known state, or one
+While starting a task, a screen that matches no known state, or one
 whose Screen signature is only **degraded** (threshold met, a Marker missing —
 Drift has started), is saved under
 `<configDir>\screen-dumps\<version>\<hash>.ansi`. `<version>` is
@@ -124,8 +123,8 @@ back.
   supervisor picks, in order: the first model whose name contains `deepseek`
   (case-insensitive) that the balance can afford, else the first containing
   `glm`, else the first containing `mimo`, else the top row.
-- So this tool is economical only when you work in **one directory**: rebinding
-  elsewhere starts a new Hour session while the old one keeps ticking.
+- All repos share the one Hour session (locked to the Workspace): switching
+  directories is free — a junction swap, no respawn, no new session.
 
 ## Known issues
 

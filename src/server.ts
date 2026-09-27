@@ -64,15 +64,9 @@ export class SupervisorClient {
 export const createMcpServer = (client: SupervisorClient): McpServer => {
   const server = new McpServer({ name: 'freebuff-supervisor', version: '0.1.0' });
   server.tool(
-    'bind',
-    'Bind freebuff to an existing directory. Switching directories is refused with bound_dir_locked while more than 30 minutes of the Hour session remain; restarting the supervisor unlocks it now. Rebinding the same directory is a no-op. Rejected while a task is active; rebinding purges queued tasks.',
-    { dir: z.string().describe('Directory to bind') },
-    async ({ dir }) => result(await client.request({ op: 'bind', dir })),
-  );
-  server.tool(
     'run_prompt',
-    'Queue a prompt against the bound directory and wait for the final answer. A full queue fails with {busy, position}; a turn that ends without an answer fails with no_answer.',
-    { dir: z.string().describe('Must equal the bound directory'), prompt: z.string().describe('Task prompt') },
+    'Queue a prompt against the repo at `dir` and wait for the final answer. Changing `dir` between calls swaps the workspace junction at idle time and purges queued tasks; a change while a task is active is refused. A full queue fails with {busy, position}; a turn that ends without an answer fails with no_answer.',
+    { dir: z.string().describe('Real repo directory for this task'), prompt: z.string().describe('Task prompt') },
     async ({ dir, prompt }) =>
       result(await client.request({ op: 'run_prompt', dir, prompt }, client.taskTimeoutMs + REQUEST_TIMEOUT_MS)),
   );
@@ -90,7 +84,7 @@ export const createMcpServer = (client: SupervisorClient): McpServer => {
   );
   server.tool(
     'status',
-    'Report supervisor state, bound directory, queue depth, and active model.',
+    'Report supervisor state, the fixed workspace directory the Instance runs in, the repo directory the workspace junction currently targets, queue depth, and active model.',
     {},
     async () => result(await client.request({ op: 'status' })),
   );
@@ -131,8 +125,6 @@ const result = (response: SupervisorResponse): ToolContent => {
       return { content: [{ type: 'text', text: 'ok' }] };
     case 'busy':
       return { content: [{ type: 'text', text: JSON.stringify({ busy: true, position: response.position }) }], isError: true };
-    case 'bound_dir_locked':
-      return { content: [{ type: 'text', text: JSON.stringify({ boundDir: response.boundDir, unlocksInMinutes: response.unlocksInMinutes }) }], isError: true };
     case 'error':
       return { content: [{ type: 'text', text: response.error }], isError: true };
   }

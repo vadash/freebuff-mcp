@@ -5,14 +5,13 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { connect } from 'node:net';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SUPERVISOR_ENTRY = join(REPO, 'src', 'supervisor.ts');
 const PIPE = '\\\\.\\pipe\\freebuff-supervisor';
-const CHATS = process.env.FREEBUFF_KEEPER_CHATS ?? join(homedir(), '.config', 'manicode', 'projects', 'freebuff-mcp', 'chats');
 const LOG = join(REPO, 'streak-keeper.log');
 const SPAWN_WAIT_MS = 120_000;
 const TURN_TIMEOUT_MS = 21 * 60_000;
@@ -125,17 +124,17 @@ const ensureSupervisor = async () => {
   throw new Error('spawned supervisor never opened the pipe');
 };
 
-const activeToday = () => {
+const activeToday = (chats) => {
   let entries;
   try {
-    entries = readdirSync(CHATS);
+    entries = readdirSync(chats);
   } catch {
     return false;
   }
   const since = lastReset().getTime();
   for (const entry of entries) {
     try {
-      if (statSync(join(CHATS, entry)).mtimeMs > since) return true;
+      if (statSync(join(chats, entry)).mtimeMs > since) return true;
     } catch {
       // vanished between readdir and stat — not activity
     }
@@ -172,9 +171,9 @@ const main = async () => {
     if (!status?.ok) return fail(`status failed: ${JSON.stringify(status)}`);
     if (status.needsLogin) return fail('needs_login — run: freebuff login');
     if (status.state === 'busy') return log('SKIP a Turn is already running');
-    if (activeToday()) return log('SKIP activity already in the current reset window');
-    const bind = await request({ op: 'bind', dir: REPO }, 30_000);
-    if (!bind?.ok) return fail(`bind failed: ${bind?.error ?? JSON.stringify(bind)}`);
+    // Chats are keyed by the workspace the Instance runs in (status derives it from the pipe).
+    const chats = join(homedir(), '.config', 'manicode', 'projects', basename(status.workspaceDir), 'chats');
+    if (activeToday(chats)) return log('SKIP activity already in the current reset window');
     const prompt = buildPrompt(listSrcFiles(), dayKeyOf(lastReset()));
     log(`run: ${prompt}`);
     const answer = await request({ op: 'run_prompt', dir: REPO, prompt }, TURN_TIMEOUT_MS + 30_000);

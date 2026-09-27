@@ -2,6 +2,8 @@
 
 - **Status:** Accepted (2026-09-24). Records the design decided after the v1
   review; the code lags it in places (see README "Known issues").
+  Partially superseded (2026-09-27): §4's eager spawn at bind and all of §5 by
+  [ADR-0003](0003-workspace-junction-replaces-bind.md).
 - **Supersedes:** the parking design in spec #1 (park at the model picker via
   `/end-session`).
 
@@ -71,6 +73,9 @@ final answer back, and it restarts often.
   `cancel_task`.
 
 ### 5. One Bound directory, with a Bind lock
+
+> Superseded by [ADR-0003](0003-workspace-junction-replaces-bind.md) — kept for
+> the record of why the Bind lock existed.
 
 - The supervisor serves one Bound directory at a time. Rebinding to another
   directory starts a new Hour session there (costing Freebucks) while the old

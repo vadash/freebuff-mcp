@@ -1,10 +1,13 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
-import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, stubPickerRows, trimRows, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { READY_PROMPT } from '../src/protocol/markers.ts';
+import { workspaceDirFor, PROMPT_PREAMBLE } from '../src/workspace.ts';
+import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
+import { sleep } from '../src/util.ts';
 import type { ChildProcess } from 'node:child_process';
 
 let pipeName = '';
@@ -31,10 +34,10 @@ const toolText = (result: CallResult): string => {
   return result.content[0]!.text ?? '';
 };
 
-const chatsRoot = (configDir: string, taskDir: string): string =>
-  join(configDir, 'projects', basename(taskDir), 'chats');
+const chatsRoot = (configDir: string): string =>
+  join(configDir, 'projects', basename(workspaceDirFor(pipeName)), 'chats');
 
-describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
+describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
   beforeEach(() => {
     pipeName = uniquePipe('mcp');
     dirs = makeDirs();
@@ -51,13 +54,9 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     serverProcess = null;
   });
 
-  it('binds, runs two queued prompts in order, and idles at ready with /new per task', async () => {
+  it('runs two queued prompts in order and idles at ready with /new per task', async () => {
     const c = boot('happy');
     await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
-    await pollStatus(pipeName, { state: 'picker' });
-    const pickerStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
-    expect(pickerStatus).toMatchObject({ state: 'picker', freebucksDaily: 25, hourSessionMinutesLeft: null });
     const completions: string[] = [];
     const first = c
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task one' } })
@@ -67,50 +66,47 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'task two' } })
       .then((r) => completions.push(toolText(r as CallResult)));
     await Promise.all([first, second]);
-    expect(completions).toEqual(['stub(GLM 5.3 Flash): task one', 'stub(GLM 5.3 Flash): task two']);
+    const submitted = (prompt: string): string => `stub(GLM 5.3 Flash): ${PROMPT_PREAMBLE}\n${prompt}`;
+    expect(completions).toEqual([submitted('task one'), submitted('task two')]);
     const status = await pollStatus(pipeName, { state: 'ready', activeModel: 'GLM 5.3 Flash', queueDepth: 0 });
-    expect(status.boundDir).toContain('freebuff-sup-task-');
+    expect(status.workspaceDir).toContain('freebuff-ws-');
+    expect(status.targetDir).toContain('freebuff-sup-task-');
     const toolStatus = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
     expect(toolStatus.hourSessionMinutesLeft).toBe(432);
     expect(toolStatus.freebucksDaily).toBeNull();
-    const chatDirs = readdirSync(chatsRoot(dirs.configDir, dirs.taskDir));
+    const chatDirs = readdirSync(chatsRoot(dirs.configDir));
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
     for (const dir of chatDirs) expect(dir.startsWith('chat-new-')).toBe(true);
   }, 30_000);
 
-  it('errors run_prompt when nothing is bound, without spawning', async () => {
+  it('errors run_prompt for a missing directory, without spawning', async () => {
     const c = boot('happy');
     await c.connect(transport!);
-    const result = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'x' } })) as CallResult;
+    const result = (await c.callTool({ name: 'run_prompt', arguments: { dir: `${dirs.taskDir}/nope`, prompt: 'x' } })) as CallResult;
     expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toMatch(/bound/i);
-    const status = await pollStatus(pipeName, { state: 'stopped', activeModel: null, boundDir: null });
-    expect(status.queueDepth).toBe(0);
+    expect(result.content[0]!.text).toMatch(/not an existing directory/);
+    const status = await pollStatus(pipeName, { state: 'stopped', targetDir: null, queueDepth: 0 });
+    expect(String(status.workspaceDir)).toContain('freebuff-ws-');
   }, 30_000);
 
-  it('errors run_prompt on a directory mismatch, naming the bound directory', async () => {
-    const c = boot('happy');
+  it('refuses a different directory while busy, naming the active target', async () => {
+    const c = boot('slow', { delayMs: 4000 });
     await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
-    const result = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.otherDir, prompt: 'x' } })) as CallResult;
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain(resolve(dirs.taskDir));
-  }, 30_000);
-
-  it('surfaces the bind lock as an MCP error naming the bound directory', async () => {
-    const c = boot('happy', { stubEnv: { FREEBUFF_STUB_SESSION_ALIVE: '1', FREEBUFF_STUB_COUNTDOWN_MIN: '45' } });
-    await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
-    await pollStatus(pipeName, { state: 'ready', hourSessionMinutesLeft: 45 });
-    const locked = (await c.callTool({ name: 'bind', arguments: { dir: dirs.otherDir } })) as CallResult;
-    expect(locked.isError).toBe(true);
-    expect(JSON.parse(locked.content[0]!.text ?? '')).toEqual({ boundDir: resolve(dirs.taskDir), unlocksInMinutes: 15 });
+    const inFlight = c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'busy work' } }).then(
+      (r) => !(r as CallResult).isError,
+      () => false,
+    );
+    await pollStatus(pipeName, { state: 'busy' });
+    const refused = (await c.callTool({ name: 'run_prompt', arguments: { dir: dirs.otherDir, prompt: 'x' } })) as CallResult;
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toContain('while a task is active');
+    expect(refused.content[0]!.text).toContain(resolve(dirs.taskDir));
+    expect(await inFlight).toBe(true);
   }, 30_000);
 
   it('cancels the active task and resets the session through the new tools', async () => {
     const c = boot('slow', { delayMs: 4000 });
     await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
     const inFlight = c
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'victim' } })
       .then(
@@ -130,7 +126,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       name: 'run_prompt',
       arguments: { dir: dirs.taskDir, prompt: 'after reset' },
     })) as CallResult;
-    expect(toolText(next)).toBe('stub(GLM 5.3 Flash): after reset');
+    expect(toolText(next)).toBe(`stub(GLM 5.3 Flash): ${PROMPT_PREAMBLE}\nafter reset`);
   }, 30_000);
 
   it('survives the MCP client disconnecting and completes the in-flight task', async () => {
@@ -149,7 +145,6 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       env: firstEnv,
     });
     await first.connect(transport!);
-    toolText((await first.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
     const inFlight = first
       .callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'survivor' } })
       .then(
@@ -172,14 +167,13 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
       toolText((await second.callTool({ name: 'status', arguments: {} })) as CallResult),
     ) as Record<string, unknown>;
     expect(status).toMatchObject({ state: 'ready', queueDepth: 0, activeModel: 'GLM 5.3 Flash' });
-    expect(String(status.boundDir)).toContain('freebuff-sup-task-');
+    expect(String(status.targetDir)).toContain('freebuff-sup-task-');
   }, 30_000);
 
   // Issue #18: a full Queue is a failed call that still carries the position.
   it('returns busy with the queue position as an MCP error once the queue is full', async () => {
     const c = boot('slow', { delayMs: 1500 });
     await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
     const tasks = ['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) =>
       c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt } }, undefined, { timeout: 30_000 }),
     );
@@ -188,7 +182,7 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
     expect(overflow.isError).toBe(true);
     expect(JSON.parse(overflow.content[0]!.text ?? '')).toEqual({ busy: true, position: 5 });
     const answers = (await Promise.all(tasks)).map((r) => toolText(r as CallResult));
-    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(GLM 5.3 Flash): ${prompt}`));
+    expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(GLM 5.3 Flash): ${PROMPT_PREAMBLE}\n${prompt}`));
   }, 30_000);
 
   it('runs the doctor protocol check through the supervisor op', async () => {
@@ -208,24 +202,39 @@ describe('freebuff MCP server (stdio, tools bind/run_prompt/status)', () => {
   it('returns the running Screen through the screen tool', async () => {
     const c = boot('happy');
     await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
-    await pollStatus(pipeName, { state: 'picker' });
-    const screen = toolText((await c.callTool({ name: 'screen', arguments: {} })) as CallResult);
-    expect(trimRows(screen).endsWith(trimRows(stubPickerRows()))).toBe(true);
-    expect(screen).toContain('Start coding for free');
+    const done = c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'screen' } }, undefined, {
+      timeout: 30_000,
+    });
+    // The screen op legitimately returns '' before the stub's first paint, so poll
+    // until the ready box is on the Instance's screen instead of sampling once.
+    const deadline = Date.now() + 10_000;
+    let screen = '';
+    while (!screen.includes(READY_PROMPT)) {
+      if (Date.now() > deadline) throw new Error(`screen never showed the ready box: ${JSON.stringify(screen)}`);
+      await sleep(150);
+      screen = toolText((await c.callTool({ name: 'screen', arguments: {} })) as CallResult);
+    }
+    await done;
   }, 30_000);
 
   it('starts the supervisor with a console, so programs it starts open no console window', async () => {
     const parentPidFile = join(dirs.otherDir, 'instance-parent.pid');
     const c = boot('happy', { stubEnv: { FREEBUFF_STUB_PARENT_PID_FILE: parentPidFile } });
     await c.connect(transport!);
-    toolText((await c.callTool({ name: 'bind', arguments: { dir: dirs.taskDir } })) as CallResult);
-    await pollStatus(pipeName, { state: 'picker' });
+    const done = c.callTool({ name: 'run_prompt', arguments: { dir: dirs.taskDir, prompt: 'console check' } }, undefined, {
+      timeout: 30_000,
+    });
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(parentPidFile)) {
+      if (Date.now() > deadline) throw new Error(`stub never wrote ${parentPidFile}`);
+      await sleep(100);
+    }
     const supervisorPid = Number(readFileSync(parentPidFile, 'utf8'));
     // A console-less supervisor makes Windows open a new console window for every
     // console program it starts: node-pty's agent on each pty.kill(), taskkill.
     expect(await consoleProcessList(supervisorPid), 'the supervisor has no console').toEqual(
       expect.arrayContaining([supervisorPid]),
     );
+    await done;
   }, 30_000);
 });

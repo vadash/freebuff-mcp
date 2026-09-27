@@ -91,7 +91,16 @@ export const pollStatus = async (
 ): Promise<Record<string, unknown>> => {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    let status: Record<string, unknown>;
+    try {
+      status = await requestPipe<Record<string, unknown>>(pipeName, { op: 'status' });
+    } catch (error) {
+      // Server tests spawn the supervisor lazily via run_prompt, so the pipe may not
+      // exist yet; a connection failure during the poll window is not fatal.
+      if (Date.now() > deadline) throw error;
+      await sleep(150);
+      continue;
+    }
     const matched = Object.entries(wanted).every(([key, value]) => status[key] === value);
     if (matched) return status;
     if (Date.now() > deadline) {

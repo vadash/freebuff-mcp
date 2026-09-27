@@ -15,13 +15,13 @@ MCP client (harness)
 MCP server  src/server.ts        thin proxy; starts the Supervisor on demand
    │ named pipe \\.\pipe\freebuff-supervisor
    ▼
-Supervisor  src/supervisor.ts    Queue, Bound directory, Bind lock, Watchdog
+Supervisor  src/supervisor.ts    Queue, Workspace, Watchdog
    │
    ▼
 Driver      src/driver.ts        keystrokes in; reads Screen and Chat store
    │ ConPTY (node-pty)
    ▼
-Instance    freebuff.exe         one at a time, started in the Bound directory
+Instance    freebuff.exe         one at a time, started in the Workspace
    ├─► Screen      rendered by @xterm/headless → state only (src/protocol/screen.ts)
    │                 recognized against the Screen signatures (src/protocol/signatures.ts)
    └─► Chat store  <configDir>/…/log.jsonl → Ack, Turn end, Answer (src/protocol/chatStore.ts)
@@ -87,13 +87,22 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 
 ### Work
 
-- **Bound directory**: the single directory the Supervisor serves, set by
-  `bind`. Every `run_prompt` must name it. _Avoid:_ "project dir", "target
-  dir", "working directory", `cwd` (except for the OS process cwd). "Project"
-  is kept only for freebuff's Chat store key (the directory basename).
-- **Bind lock**: `bind` to a different directory is refused while more than 30
-  minutes of the Hour session remain (`bound_dir_locked`).
-- **Task**: one `run_prompt` call: a prompt queued against the Bound directory.
+- **Workspace**: the fixed directory, derived from the pipe name, that the
+  Instance always runs in (`%TEMP%\freebuff-ws-<hash>`). Stable across
+  restarts, so switching repos never restarts the Instance or the Hour
+  session. _Avoid:_ "bound directory", "working directory", `cwd` (except for
+  the OS process cwd).
+- **Junction**: the `repo` link inside the Workspace, pointing at the
+  **target directory**. A Windows junction: no admin rights to create, and
+  removing it deletes only the link. Swapped only while no Task runs;
+  recreated by itself if deleted. _Avoid:_ "symlink", "mount".
+- **Target directory**: the caller's real repo, named by every `run_prompt`.
+  Filesystem roots, the Workspace itself, and its ancestors are refused as
+  unsafe targets. "Project" is kept only for freebuff's Chat store key (the
+  Workspace basename). _Avoid:_ "bound directory".
+- **Task**: one `run_prompt` call: a prompt queued against the target
+  directory. The supervisor prepends a fixed preamble pointing the model at
+  `repo/`, so prompts can name repo paths as if the repo were the cwd.
 - **Queue**: FIFO of Tasks waiting behind the active one, depth 4. A full Queue
   fails with `busy` and a position.
 - **Conversation**: freebuff's chat context. `/new` starts a fresh one; the
@@ -107,8 +116,8 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
   Task's baseline.
 - **Answer**: `data.fullResponse` of the Turn end line; what `run_prompt`
   returns. A Turn end without one fails the Task with `no_answer`.
-- **Big payload**: a prompt over 64 KB, written to a file in the Bound
-  directory and sent as a file reference.
+- **Big payload**: a prompt over 64 KB, written to a file in the Workspace
+  and sent as a file reference.
 
 ### Observation
 
@@ -132,7 +141,7 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
   (every Marker), degraded (Drift: threshold met, some Marker missing) or
   fail. Not run while the Instance starts.
 - **Error log**: Screen lines matching the known error Markers seen during a
-  Turn, appended with a timestamp and the Bound directory, once per Turn. Never
+  Turn, appended with a timestamp and the Workspace, once per Turn. Never
   acted on.
 - **Screen dump**: an unrecognized or degraded Screen saved as
   `<configDir>/screen-dumps/<version>/<hash>.ansi` while the settle loop waits.
@@ -154,7 +163,7 @@ and `/end-session` is never sent.
 ## Supervisor states
 
 ```
-stopped ──bind──► spawning ──► picker ──Task arrives, model picked──► busy ⇄ ready
+stopped ──run_prompt──► spawning ──► picker ──Task arrives, model picked──► busy ⇄ ready
                                   ▲                                     │
                                   └──── Hour session expired ◄──────────┘
 ```
@@ -168,7 +177,7 @@ stopped ──bind──► spawning ──► picker ──Task arrives, model 
 - A spawn failure (e.g. `needs_login`) returns to `stopped`.
 
 - `stopped`: no Instance.
-- `spawning`: Instance starting in the Bound directory.
+- `spawning`: Instance starting in the Workspace.
 - `picker`: Instance at the Model picker or the Continue screen; no Hour
   session is ticking for this directory.
 - `ready`: Hour session running, input box idle, Queue empty.

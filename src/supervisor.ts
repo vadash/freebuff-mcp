@@ -13,6 +13,7 @@ import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
 import { acquireSupervisorLock } from './supervisorLock.ts';
+import { PROMPT_PREAMBLE, assertSafeTarget, ensureJunction, workspaceDirFor } from './workspace.ts';
 
 export type SupervisorState = 'stopped' | 'spawning' | 'picker' | 'ready' | 'busy';
 
@@ -25,7 +26,6 @@ export interface SupervisorConfig {
 }
 
 export type SupervisorRequest =
-  | { op: 'bind'; dir: string }
   | { op: 'run_prompt'; dir: string; prompt: string }
   | { op: 'cancel_task' }
   | { op: 'new_session' }
@@ -38,7 +38,11 @@ export type SupervisorRequest =
 // contract.
 export interface StatusPayload {
   state: SupervisorState;
-  boundDir: string | null;
+  // The fixed per-pipe directory the Instance always runs in; `repo` inside it is a
+  // junction to `targetDir`.
+  workspaceDir: string;
+  // The caller's real repo the junction points at; null until the first task.
+  targetDir: string | null;
   queueDepth: number;
   activeModel: string | null;
   instancePid: number | null;
@@ -62,7 +66,6 @@ export type SupervisorResponse =
   | ({ ok: true; kind: 'doctor'; skipped: false } & Recognition)
   | { ok: true; kind: 'doctor'; skipped: true; screen: null; level: null; missing: [] }
   | { ok: false; kind: 'error'; error: string }
-  | { ok: false; kind: 'bound_dir_locked'; boundDir: string; unlocksInMinutes: number; error: string }
   | { ok: false; kind: 'busy'; position: number; error: string };
 
 interface QueuedTask {
@@ -85,13 +88,12 @@ class WatchdogFailure extends Error {
   }
 }
 
-// Issue #14: switching directories abandons an Hour session with more than this
-// much time left on it; the supervisor refuses until the window narrows.
-const BIND_LOCK_GRACE_MINUTES = 30;
-
 export class Supervisor {
   private spawning = false;
-  private boundDir: string | null = null;
+  // The fixed per-pipe directory every Instance spawns in; the caller's repo is the
+  // `repo` junction inside it, swapped at idle time when run_prompt changes target.
+  private readonly workspace: string;
+  private targetDir: string | null = null;
   private readonly queue: QueuedTask[] = [];
   private active: QueuedTask | null = null;
   private startingConversation = false;
@@ -106,6 +108,7 @@ export class Supervisor {
 
   constructor(config: SupervisorConfig = {}) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
+    this.workspace = workspaceDirFor(this.pipeName);
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
     this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MS;
     this.errorLogPath = config.errorLogPath ?? ERROR_LOG_PATH;
@@ -129,9 +132,6 @@ export class Supervisor {
 
   handle = async (request: SupervisorRequest, reply: (response: SupervisorResponse) => void): Promise<void> => {
     switch (request.op) {
-      case 'bind':
-        await this.bindInstance(request.dir, reply);
-        break;
       case 'run_prompt':
         await this.runPrompt(request.dir, request.prompt, reply);
         break;
@@ -163,7 +163,8 @@ export class Supervisor {
           ok: true,
           kind: 'status',
           state: this.observedState(verdict ?? undefined),
-          boundDir: this.boundDir,
+          workspaceDir: this.workspace,
+          targetDir: this.targetDir,
           queueDepth: this.queue.length,
           activeModel,
           instancePid: this.driver.instancePid(),
@@ -204,58 +205,6 @@ export class Supervisor {
         break;
     }
   };
-
-  private async bindInstance(dir: string, reply: (response: SupervisorResponse) => void): Promise<void> {
-    // Issue #5: a rebind is blocked only by an active task; queued tasks are purged.
-    if (this.active !== null) {
-      reply({ ok: false, kind: 'error', error: 'bind rejected: a task is active' });
-      return;
-    }
-    let resolved: string;
-    try {
-      resolved = resolve(dir);
-      if (!statSync(resolved).isDirectory()) throw new Error('not a directory');
-    } catch {
-      reply({ ok: false, kind: 'error', error: `bind failed: ${dir} is not an existing directory` });
-      return;
-    }
-    if (resolved === this.boundDir && this.driver.isAlive()) {
-      reply({ ok: true, kind: 'ok' });
-      return;
-    }
-    if (this.boundDir !== null && resolved !== this.boundDir) {
-      // Issue #30 (story 10 of #25): unknown minutes (the Countdown is absent or drifted) are
-      // never read as zero and never enforce the lock — a fresh or expired Hour session
-      // shows no Countdown at all, so only proven minutes may block a switch.
-      const minutesLeft = this.driver.probe().hourSessionMinutesLeft;
-      if (minutesLeft !== null && minutesLeft > BIND_LOCK_GRACE_MINUTES) {
-        const unlocksInMinutes = minutesLeft - BIND_LOCK_GRACE_MINUTES;
-        reply({
-          ok: false,
-          kind: 'bound_dir_locked',
-          boundDir: this.boundDir,
-          unlocksInMinutes,
-          error: `bind rejected: bound_dir_locked: ${this.boundDir} unlocks in ${unlocksInMinutes} minutes; restart the supervisor to switch now`,
-        });
-        return;
-      }
-    }
-    for (const task of this.queue.splice(0)) {
-      task.reply({ ok: false, kind: 'error', error: 'rebind purged this queued task: the directory was rebound' });
-    }
-    this.driver.kill();
-    this.boundDir = resolved;
-    this.spawning = true;
-    try {
-      await this.driver.awaitIdle(resolved);
-      this.spawning = false;
-      reply({ ok: true, kind: 'ok' });
-    } catch (error) {
-      this.driver.kill();
-      this.spawning = false;
-      reply({ ok: false, kind: 'error', error: `bind failed: ${errorMessage(error)}` });
-    }
-  }
 
   private async cancelTask(reply: (response: SupervisorResponse) => void): Promise<void> {
     const task = this.active;
@@ -304,13 +253,44 @@ export class Supervisor {
   }
 
   private async runPrompt(dir: string, prompt: string, reply: (response: SupervisorResponse) => void): Promise<void> {
-    if (this.boundDir === null) {
-      reply({ ok: false, kind: 'error', error: 'run_prompt failed: no directory is bound' });
+    let resolved: string;
+    try {
+      resolved = resolve(dir);
+      if (!statSync(resolved).isDirectory()) throw new Error('not a directory');
+    } catch {
+      reply({ ok: false, kind: 'error', error: `run_prompt failed: ${dir} is not an existing directory` });
       return;
     }
-    const resolved = resolve(dir);
-    if (resolved !== this.boundDir) {
-      reply({ ok: false, kind: 'error', error: `run_prompt failed: ${dir} does not match the bound directory ${this.boundDir}` });
+    try {
+      assertSafeTarget(resolved, this.workspace);
+    } catch {
+      reply({ ok: false, kind: 'error', error: `run_prompt failed: ${dir} is not a safe junction target` });
+      return;
+    }
+    try {
+      // Issue #5: a retarget is blocked only by an active task; queued tasks are purged.
+      const retarget = resolved !== this.targetDir;
+      if (retarget && this.active !== null) {
+        reply({
+          ok: false,
+          kind: 'error',
+          error: `run_prompt failed: ${dir} does not match the active directory ${this.targetDir} while a task is active`,
+        });
+        return;
+      }
+      // Swap the junction before recording the new target, so a failed swap (e.g. a
+      // real directory named repo) leaves the previous binding reported by status.
+      ensureJunction(this.workspace, resolved);
+      if (retarget) {
+        for (const task of this.queue.splice(0)) {
+          task.reply({ ok: false, kind: 'error', error: 'retarget purged this queued task: the directory changed' });
+        }
+        this.targetDir = resolved;
+      }
+    } catch (error) {
+      // Covers the real-directory-named-repo case: the swap path refuses instead of
+      // removing anything it did not create as a link.
+      reply({ ok: false, kind: 'error', error: `run_prompt failed: ${(error as Error).message}` });
       return;
     }
     if (this.active !== null && this.queue.length >= QUEUE_DEPTH) {
@@ -345,7 +325,7 @@ export class Supervisor {
   // Issue #16: one attempt per Task. A freeze, a crash or the deadline fails it and the
   // prompt is never resubmitted: a half-run coding task is not idempotent.
   private async supervised(task: QueuedTask, prompt: string): Promise<string> {
-    const work = this.driver.runTask(this.boundDir!, prompt);
+    const work = this.driver.runTask(this.workspace, prompt);
     work.catch(() => {});
     const { promise: tripped, reject: trip } = Promise.withResolvers<never>();
     const deadline = setTimeout(
@@ -375,7 +355,7 @@ export class Supervisor {
   // more often than when the Turn started (earlier Turns' copies stay on the Screen), and
   // is logged once per Turn.
   private watchErrors(): { stop: () => void } {
-    const boundDir = this.boundDir!;
+    const workspace = this.workspace;
     const tally = (): Map<string, number> => {
       const counts = new Map<string, number>();
       for (const line of errorLines(this.driver.screenText())) counts.set(line, (counts.get(line) ?? 0) + 1);
@@ -392,7 +372,7 @@ export class Supervisor {
       for (const line of lines) logged.add(line);
       try {
         mkdirSync(dirname(this.errorLogPath), { recursive: true });
-        appendFileSync(this.errorLogPath, JSON.stringify({ time: new Date().toISOString(), boundDir, lines }) + '\n');
+        appendFileSync(this.errorLogPath, JSON.stringify({ time: new Date().toISOString(), workspace, lines }) + '\n');
       } catch {
         // The log is best-effort; it never fails a Task.
       }
@@ -414,7 +394,7 @@ export class Supervisor {
   // Frozen: neither the Screen (minus the Countdown and Freebucks lines) nor the Chat
   // store changed for the freeze threshold.
   private watchFreeze(task: QueuedTask, onFrozen: () => void): { stop: () => void } {
-    const dir = this.boundDir!;
+    const dir = this.workspace;
     let lastLog = this.driver.newestLogSize(dir);
     let lastScreen = freezeKey(this.driver.screenText());
     let lastChange = Date.now();
@@ -439,13 +419,13 @@ export class Supervisor {
     return { stop: () => clearInterval(timer) };
   }
 
-  // A fresh Instance in the Bound directory, idle at the picker or ready (an unexpired Hour
+  // A fresh Instance in the workspace, idle at the picker or ready (an unexpired Hour
   // session resumes). A failed respawn leaves the supervisor stopped; the next Task spawns.
   private async respawn(): Promise<void> {
     this.spawning = true;
     await this.driver.stop();
     try {
-      await this.driver.awaitIdle(this.boundDir!);
+      await this.driver.awaitIdle(this.workspace);
       this.spawning = false;
     } catch {
       this.driver.kill();
@@ -458,11 +438,12 @@ export class Supervisor {
     try {
       let prompt = task.prompt;
       if (Buffer.byteLength(prompt, 'utf8') > PASTE_THRESHOLD_BYTES) {
-        tempFile = join(this.boundDir!, `.freebuff-task-${++this.tempCounter}.md`);
+        tempFile = join(this.workspace, `.freebuff-task-${++this.tempCounter}.md`);
         writeFileSync(tempFile, prompt);
         prompt = `Read the instructions in ${basename(tempFile)} in the current directory and follow them.`;
       }
-      const answer = await this.supervised(task, prompt);
+      // The Instance's cwd is the workspace, never the caller's repo.
+      const answer = await this.supervised(task, `${PROMPT_PREAMBLE}\n${prompt}`);
       this.spawning = false;
       task.reply({ ok: true, kind: 'answer', answer });
     } catch (error) {

@@ -16,6 +16,7 @@ import {
 import { CHATS_DIRNAME, LOGIN_REQUIRED, LOG_FILENAME, PROJECTS_DIRNAME, READY_PROMPT, mentionsSingleInstance } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
 import { recognizeScreen } from '../src/protocol/signatures.ts';
+import { workspaceDirFor } from '../src/workspace.ts';
 import { captureFixturesDir, flatDump, RealCli, realChatsRoot, snapshotChats, unaffordablePickReason } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
 
@@ -99,10 +100,11 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     }
   });
 
-  it('binds the repo, runs one trivial task matching the chat store, pastes a ~40 KB prompt intact, idles at ready, and respawns after a driver kill', async () => {
+  it('runs one trivial task against the repo matching the chat store, pastes a ~40 KB prompt intact, idles at ready, and respawns after a driver kill', async () => {
     proc = startSupervisor({ pipeName, mode: 'happy', realDriver: true, ...makeDirs() });
     await waitForPipe(pipeName, 30_000);
-    expect((await requestPipe<{ ok: boolean }>(pipeName, { op: 'bind', dir: repoRoot })).ok).toBe(true);
+    // Chats are keyed by the workspace the Instance runs in, not the caller's repo.
+    const chatDir = workspaceDirFor(pipeName);
 
     const done = await requestPipe<{ ok: boolean; answer?: string; error?: string }>(
       pipeName,
@@ -110,7 +112,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       runTimeoutMs,
     );
     expect(done.ok, done.error).toBe(true);
-    expect(done.answer).toBe(chatStoreAnswer(configDir, repoRoot));
+    expect(done.answer).toBe(chatStoreAnswer(configDir, chatDir));
 
     const ready = await pollStatus(pipeName, { state: 'ready', queueDepth: 0 });
     expect(ready.activeModel, `live service picked a model other than ${expectedModel}`).toBe(expectedModel);
@@ -121,7 +123,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       runTimeoutMs,
     );
     expect(big.ok, big.error).toBe(true);
-    expect(chatStoreHoldsPrompt(configDir, repoRoot, bigPrompt), 'the Chat store does not hold the ~40 KB prompt intact').toBe(true);
+    expect(chatStoreHoldsPrompt(configDir, chatDir, bigPrompt), 'the Chat store does not hold the ~40 KB prompt intact').toBe(true);
 
     // The 2026-09 CLI no longer writes its pid to disk; the status op reports the pid
     // the supervisor's own PTY holds.
