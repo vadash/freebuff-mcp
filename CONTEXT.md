@@ -58,6 +58,16 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
   Hour session.
 - **Freebucks**: freebuff's daily allowance (25 or 40). Starting an Hour
   session costs the picked model's price (e.g. 0/5/10).
+- **Freebucks reset**: the moment the daily allowance refreshes: 21:00 UTC
+  (00:00 Istanbul), measured from the picker's `resets in` countdown. The
+  picker's "+15 Freebucks every Pacific day" perk line notwithstanding, the
+  measured allowance clock is 21:00 UTC, not Pacific midnight.
+  _Avoid:_ "Pacific midnight" (for the reset).
+- **Streak keeper**: the daily routine that keeps freebuff's login streak
+  alive: if the Chat store shows no activity in the current allowance window,
+  it runs one small read-only Task; otherwise it does nothing. The keeper
+  never ends an Hour session and shuts down only a Supervisor it started
+  itself.
 - **Model picker**: the screen titled "Start coding for free" that lists models
   and prices. Picking one starts an Hour session. The Instance idles here when
   no Hour session is running.

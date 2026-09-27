@@ -9,6 +9,9 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "streak": "node scripts/streak-keeper.mjs",
+    "streak:register": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-streak-task.ps1",
+    "streak:unregister": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-streak-task.ps1 -Remove",
     "postinstall": "node scripts/patch-node-pty.mjs"
   },
   "dependencies": {
