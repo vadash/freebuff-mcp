@@ -1,5 +1,5 @@
 // Ready prompt vendored from Praket7/freebuff-mcp (MIT); the rest probed from the live TUI.
-// Wording-bearing markers were captured from the real TUI (tests/fixtures/screen/README.md);
+// Wording-bearing markers were captured from the real TUI (tests/fixtures/screen/);
 // `doctor` checks the ones the Model picker, ready, Continue, Session-in-use dialog, login
 // gate and connecting screens render against the live Screen.
 export const READY_PROMPT = 'Enter a coding task or / for commands';
@@ -56,7 +56,7 @@ export const PRICE_REGEX = /(\d+)\s+Freebucks\/hr/;
 // Balance on the picker: `FREE · 25/25 Freebucks daily · resets in 19h 50m · 15 in wallet`
 // (picker-expanded.ansi; 0.0.199 added the wallet suffix). An exhausted
 // day shows `0/25` or `0/40`. There is no separate low-Freebucks literal: the
-// low state is this left number falling below a model's price (fixture README).
+// low state is this left number falling below a model's price.
 export const FREEBUCKS_BALANCE_REGEX = /(\d+)\/(\d+)\s+Freebucks daily/;
 // Remaining balance as the 0.0.193 Continue screen rendered it (`Session ended  ·  20 Freebucks left`);
 // the 0.0.199 Continue screen no longer shows any balance. Kept for the Freeze key

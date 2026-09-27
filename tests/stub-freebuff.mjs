@@ -3,7 +3,7 @@
 // duplicate src/protocol/{markers,chatStore}.ts on purpose so the driver under
 // test is the only side consuming the real modules. The Model picker and the
 // Continue screen replay the real captured fixtures verbatim
-// (tests/fixtures/screen/README.md); FREEBUFF_STUB_COUNTDOWN_MIN,
+// (tests/fixtures/screen/); FREEBUFF_STUB_COUNTDOWN_MIN,
 // FREEBUFF_STUB_FREEBUCKS and FREEBUFF_STUB_PICKER override the numbers the
 // protocol reads; FREEBUFF_STUB_SESSION_ALIVE=1 boots into the ready screen of
 // an unexpired Hour session instead of the picker. The displayed model is

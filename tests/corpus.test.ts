@@ -3,7 +3,7 @@
 // version folder is a real capture of a known screen, and its file name names the
 // screen it shows, so the checks are table-driven over names. `negative/` holds
 // hand-made frames a loosened signature must never recognize; `synthetic/` holds the
-// hand-made emulator vectors (fixtures README).
+// hand-made emulator vectors (tests/fixtures/screen/AGENTS.md).
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { classifyScreen } from '../src/protocol/screen.ts';
@@ -39,7 +39,7 @@ const RECOGNIZED_AS: Record<string, KnownScreen> = {
   'split-escape': 'ready',
 };
 
-// Version folders grow only by a deliberate capture or dump promotion (fixtures README).
+// Version folders grow only by a deliberate capture or dump promotion (tests/fixtures/screen/AGENTS.md).
 const VERSIONS = ['0.0.193', '0.0.198', '0.0.199'];
 
 const folders = (): string[] =>

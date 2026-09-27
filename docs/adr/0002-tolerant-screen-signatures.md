@@ -1,6 +1,8 @@
-# ADR-0002: Tolerant Screen signatures with an accumulating fixture corpus
+---
+status: accepted (2026-09-26); decided in issue #25, implemented by #26–#32
+---
 
-- **Status:** Accepted (2026-09-26). Decided in issue #25; implemented by #26–#32.
+# ADR-0002: Tolerant Screen signatures with an accumulating fixture corpus
 
 ## Context
 

@@ -1,31 +1,7 @@
 # freebuff-supervisor: context
 
-Domain language for this repo. Decisions and their reasons live in
-[`docs/adr/`](docs/adr/); start with
-[ADR-0001](docs/adr/0001-supervised-freebuff-cli.md). Why screen recognition is
-tolerant and the fixture corpus accumulates:
-[ADR-0002](docs/adr/0002-tolerant-screen-signatures.md).
-
-## Moving parts
-
-```
-MCP client (harness)
-   │ stdio
-   ▼
-MCP server  src/server.ts        thin proxy; starts the Supervisor on demand
-   │ named pipe \\.\pipe\freebuff-supervisor
-   ▼
-Supervisor  src/supervisor.ts    Queue, Workspace, Watchdog
-   │
-   ▼
-Driver      src/driver.ts        keystrokes in; reads Screen and Chat store
-   │ ConPTY (node-pty)
-   ▼
-Instance    freebuff.exe         one at a time, started in the Workspace
-   ├─► Screen      rendered by @xterm/headless → state only (src/protocol/screen.ts)
-   │                 recognized against the Screen signatures (src/protocol/signatures.ts)
-   └─► Chat store  <configDir>/…/log.jsonl → Ack, Turn end, Answer (src/protocol/chatStore.ts)
-```
+Domain language for this repo: what each word means. Where the code for a
+term lives: [AGENTS.md](AGENTS.md#code-map).
 
 ## Glossary
 
@@ -52,7 +28,7 @@ Instance    freebuff.exe         one at a time, started in the Workspace
   when a model is picked at the Model picker, is locked to the directory the
   Instance was started in, keeps ticking whatever we do, and resumes when
   freebuff is relaunched in that directory. The Supervisor never ends one
-  early. Code: `hourSession`. _Avoid:_ "trial session", "trial clock",
+  early. _Avoid:_ "trial session", "trial clock",
   bare "session".
 - **Countdown**: the minutes-left marker on the Screen's status line
   (`7h 12m left`, `1h left`, `59m left`, `2:58 left`), i.e. minutes left in the
@@ -73,10 +49,10 @@ Instance    freebuff.exe         one at a time, started in the Workspace
   and prices. Picking one starts an Hour session. The Instance idles here when
   no Hour session is running.
 - **Pick rule**: how the Driver picks at the Model picker, in order: the first
-  deepseek row the Freebucks balance can afford, else the first glm row, else
-  the first mimo row, else the highlighted row. Down-arrows only, then Enter;
-  re-applied on every Task that finds the picker. Code: `pickModelIndex`.
-  _Avoid:_ "model strategy", "preferred model".
+  deepseek row the Freebucks balance can afford (an unreadable balance counts
+  as unaffordable), else the first glm row, else the first mimo row, else the
+  top row. Names match case-insensitively, in displayed order. Re-applied on
+  every Task that finds the picker. _Avoid:_ "model strategy", "preferred model".
 - **Active model**: the model an Hour session runs with, shown before the first
   `·` on the ready status line. Re-derived from the Screen on every read,
   never stored; null whenever no Hour session is running.
@@ -143,9 +119,8 @@ Instance    freebuff.exe         one at a time, started in the Workspace
 - **Error log**: Screen lines matching the known error Markers seen during a
   Turn, appended with a timestamp and the Workspace, once per Turn. Never
   acted on.
-- **Screen dump**: an unrecognized or degraded Screen saved as
-  `<configDir>/screen-dumps/<version>/<hash>.ansi` while the settle loop waits.
-  The hash is of the Freeze key, so Countdown repaints dedupe to one file.
+- **Screen dump**: an unrecognized or degraded Screen saved while the settle
+  loop waits, one file per Freeze key, so Countdown repaints dedupe to one file.
   Write-only diagnostics; drift shows up as data, not as failed Tasks. Fixing
   Drift mostly means promoting a dump into the fixture corpus.
 - **Drift**: a CLI update changing a known screen so that some of its Markers
@@ -182,10 +157,3 @@ stopped ──run_prompt──► spawning ──► picker ──Task arrives, 
   session is ticking for this directory.
 - `ready`: Hour session running, input box idle, Queue empty.
 - `busy`: a Task's Turn is running.
-
-Flags reported by `status` alongside the state: `needsLogin` (freebuff demands
-`freebuff login`, never retried automatically), `screenDrift` (the installed CLI
-version has an unknown or degraded Screen on record — a Screen dump — while the
-fixture corpus does not cover that version yet; clears when an update changes the
-installed version, or when a dump is promoted into a corpus folder for the
-version) and `updatePending` (a newer CLI is installed than the running Instance).

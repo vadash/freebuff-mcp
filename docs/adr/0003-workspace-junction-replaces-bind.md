@@ -1,6 +1,9 @@
+---
+status: accepted (2026-09-27)
+---
+
 # ADR-0003: Workspace junction replaces bind
 
-- **Status:** Accepted (2026-09-27).
 - **Supersedes:** ADR-0001 §4's "`bind` spawns the Instance straight away" and
   all of §5 (One Bound directory, with a Bind lock).
 

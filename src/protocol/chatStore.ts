@@ -1,6 +1,11 @@
 import { basename } from 'node:path';
 import { FULL_RESPONSE_KEY, MSG_KEY, SHOULD_END_TURN_KEY, TURN_END_MSG } from './markers.ts';
 
+// The CLI writes <configDir>/projects/<projectKey(cwd)>/chats/<timestamp>/log.jsonl
+// (configDir = ~/.config/manicode): an Ack line mentioning the prompt, then the Turn
+// end line carrying data.fullResponse. Re-verified on 0.0.199; `~/.freebuff` held
+// per-project state only for older builds.
+
 // Issue #1: basename-key collisions are accepted; the real app keys chats by plain basename.
 export function projectKey(dir: string): string {
   return basename(dir);

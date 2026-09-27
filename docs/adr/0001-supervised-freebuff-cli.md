@@ -1,9 +1,9 @@
+---
+status: accepted (2026-09-24); §4's eager spawn at bind and all of §5 superseded by ADR-0003 (2026-09-27)
+---
+
 # ADR-0001: Supervise one freebuff CLI Instance behind an MCP proxy
 
-- **Status:** Accepted (2026-09-24). Records the design decided after the v1
-  review; the code lags it in places (see README "Known issues").
-  Partially superseded (2026-09-27): §4's eager spawn at bind and all of §5 by
-  [ADR-0003](0003-workspace-junction-replaces-bind.md).
 - **Supersedes:** the parking design in spec #1 (park at the model picker via
   `/end-session`).
 
@@ -103,11 +103,7 @@ At the picker, in order:
 Matching is a case-insensitive substring in displayed order; affordability gates
 only the deepseek candidate. The rule runs over the picker rows and balance
 parsed from the Screen (`classifyScreen().entries`, `freebucksBalance`), not raw
-lines. Verified against the 0.0.199 capture (2026-09-26): the picker is born
-collapsed to a single `GLM 5.3 Flash` row (`0 Freebucks/hr`, `↓  See all 5
-models` below), so the rule lands on GLM and the deepseek affordability gate is
-not exercised by today's wording; the seam stays covered by stub tests with
-synthetic rows. `status.activeModel` reports the model observed on the ready
+lines. `status.activeModel` reports the model observed on the ready
 status line. The model policy file (`FREEBUFF_MODELS_FILE`) and the
 `settings.json` `freebuffModel` write are removed: CLI v0.0.188 ignores that
 setting. This reverses spec #1's "never switch models with arrow keys", which
