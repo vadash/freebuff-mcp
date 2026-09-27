@@ -32,7 +32,8 @@ Instance    freebuff.exe         one at a time, started in the Bound directory
 ### Processes
 
 - **Supervisor**: the long-lived daemon that owns the Instance, the Queue and
-  the Watchdog. Outlives harness restarts.
+  the Watchdog. Outlives harness restarts. At most one runs per pipe name; a
+  second start exits immediately.
 - **MCP server**: the stdio proxy the harness launches. Holds no state.
 - **Driver**: the code that runs the Instance in a pseudo-terminal, types into
   it, and reads the Screen and Chat store.

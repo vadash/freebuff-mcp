@@ -12,6 +12,7 @@ import { hasScreenDump } from './protocol/screenDump.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
+import { acquireSupervisorLock } from './supervisorLock.ts';
 
 export type SupervisorState = 'stopped' | 'spawning' | 'picker' | 'ready' | 'busy';
 
@@ -548,6 +549,11 @@ if (isMainModule(import.meta.url)) {
     const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MS;
     const errorLogPath = process.env.FREEBUFF_ERROR_LOG || ERROR_LOG_PATH;
     if (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS)) process.exit(0);
+    // Windows lets several servers share one named pipe, so reachability alone
+    // cannot detect a duplicate; the pid lock makes a second supervisor exit.
+    const lock = acquireSupervisorLock(pipeName);
+    if (lock === null) process.exit(0);
+    process.on('exit', () => lock.release());
     const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs, errorLogPath });
     try {
       await supervisor.listen();
