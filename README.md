@@ -74,6 +74,7 @@ one early. There is no model selection: freebuff runs the model it remembers
 | `needsLogin` | freebuff demands `freebuff login`; never retried automatically |
 | `screenDrift` | The installed CLI version has an unknown or degraded Screen on record (a [Screen dump](#screen-dumps)) that the fixture corpus does not cover yet; clears when an update changes the installed version or the dump is promoted into the corpus |
 | `instancePid` | OS pid of the running freebuff Instance, or `null` |
+| `fingerprint` | The daemon's code identity (ADR-0005); the MCP server compares it with its own and swaps the daemon on mismatch |
 
 ### Failures
 

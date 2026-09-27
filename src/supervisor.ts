@@ -12,7 +12,7 @@ import { hasScreenDump, metadataVersion } from './protocol/screenDump.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
-import { acquireSupervisorLock } from './supervisorLock.ts';
+import { acquireSupervisorLock, supervisorFingerprint } from './supervisorLock.ts';
 import { PROMPT_PREAMBLE, assertSafeTarget, ensureJunction, workspaceDirFor } from './workspace.ts';
 
 export type SupervisorState = 'stopped' | 'spawning' | 'idle' | 'ready' | 'busy';
@@ -51,6 +51,9 @@ export interface StatusPayload {
   needsLogin: boolean;
   // Issue #31: Drift is visible on status, not just to whoever calls doctor.
   screenDrift: boolean;
+  // The daemon's code fingerprint (ADR-0005): the MCP server compares it with its own
+  // and spawns a replacement daemon when they differ.
+  fingerprint: string;
 }
 
 export type SupervisorResponse =
@@ -171,6 +174,7 @@ export class Supervisor {
           freebucksDaily: probe.freebucksDaily,
           needsLogin: this.driver.needsLogin(),
           screenDrift: hasScreenDump(this.driverOptions.configDir, driftVersion) && !corpusVersions().includes(driftVersion),
+          fingerprint: supervisorFingerprint(),
         });
         break;
       }
@@ -513,12 +517,16 @@ if (isMainModule(import.meta.url)) {
     const { pipeName, driver, taskTimeoutMs } = mainOptions();
     const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MS;
     const errorLogPath = process.env.FREEBUFF_ERROR_LOG || ERROR_LOG_PATH;
-    if (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS)) process.exit(0);
     // Windows lets several servers share one named pipe, so reachability alone
-    // cannot detect a duplicate; the pid lock makes a second supervisor exit.
-    const lock = acquireSupervisorLock(pipeName);
+    // cannot detect a duplicate; the pid lock makes a second supervisor exit. A start
+    // with different code (a new build after an update) replaces the holder instead.
+    const lock = await acquireSupervisorLock(pipeName);
     if (lock === null) process.exit(0);
     process.on('exit', () => lock.release());
+    // Checked only after the lock: a duplicate exits because the lock said so, and a
+    // takeover start must not — the stale daemon's socket is still draining, so the
+    // reachability probe would misread this start as the duplicate.
+    if (!lock.replaced && (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS))) process.exit(0);
     const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs, errorLogPath });
     try {
       await supervisor.listen();

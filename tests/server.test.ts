@@ -187,6 +187,33 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
     expect(answers).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) => `stub(DeepSeek V4.1 Flash): ${PROMPT_PREAMBLE}\n${prompt}`));
   }, 30_000);
 
+  it('replaces a stale-code daemon through the fingerprint handshake (ADR-0005)', async () => {
+    // A daemon from an older code generation holds the pipe — the state an MCP reload
+    // leaves behind when the supervisor code changed while it ran.
+    process.env.FREEBUFF_SUPERVISOR_FINGERPRINT = 'old-code';
+    supervisorProc = startSupervisor({ pipeName, mode: 'happy', ...dirs });
+    await waitForPipe(pipeName, 10_000);
+    // The reloaded MCP server (and the supervisor it would spawn) is a new generation.
+    process.env.FREEBUFF_SUPERVISOR_FINGERPRINT = 'new-code';
+    try {
+      const c = boot('happy');
+      await c.connect(transport!);
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const status = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
+        if (status.fingerprint === 'new-code') break;
+        if (Date.now() > deadline) throw new Error(`status still served by the old daemon: ${JSON.stringify(status)}`);
+        await sleep(300);
+      }
+      await expectExit(supervisorProc, 10_000);
+      supervisorProc = null; // already reaped; afterEach would hang on its exit event
+      // A fresh daemon sits at 'stopped' until its first Task spawns the Instance.
+      expect(await pollStatus(pipeName, { state: 'stopped', fingerprint: 'new-code' })).toMatchObject({ ok: true });
+    } finally {
+      delete process.env.FREEBUFF_SUPERVISOR_FINGERPRINT;
+    }
+  }, 60_000);
+
   it('runs the doctor protocol check through the supervisor op', async () => {
     const c = boot('happy');
     await c.connect(transport!);

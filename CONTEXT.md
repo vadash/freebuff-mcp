@@ -8,8 +8,9 @@ term lives: [AGENTS.md](AGENTS.md#code-map).
 ### Processes
 
 - **Supervisor**: the long-lived daemon that owns the Instance, the Queue and
-  the Watchdog. Outlives harness restarts. At most one runs per pipe name; a
-  second start exits immediately.
+the Watchdog. Outlives harness restarts. At most one runs per pipe name; a
+second start with the same code exits immediately, and a start with different
+code replaces the holder (ADR-0005).
 - **MCP server**: the stdio proxy the harness launches. Holds no state.
 - **Driver**: the code that runs the Instance in a pseudo-terminal, types into
   it, and reads the Screen and Chat store.

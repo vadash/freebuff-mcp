@@ -10,6 +10,8 @@ import { PIPE_PROBE_TIMEOUT_MS, READY_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from './c
 import type { DriverOptions } from './driver.ts';
 import type { SupervisorRequest, SupervisorResponse } from './supervisor.ts';
 import { pipeReachable, requestPipe, waitForPipe } from './ipc.ts';
+import { supervisorFingerprint } from './supervisorLock.ts';
+import { sleep } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
 
 const supervisorEntry = resolve(dirname(fileURLToPath(import.meta.url)), 'supervisor.ts');
@@ -38,7 +40,13 @@ export class SupervisorClient {
   }
 
   async ensureStarted(): Promise<void> {
-    if (await pipeReachable(this.options.pipeName, PIPE_PROBE_TIMEOUT_MS)) return;
+    if (await pipeReachable(this.options.pipeName, PIPE_PROBE_TIMEOUT_MS)) {
+      // ADR-0005: a reachable pipe may still be a daemon running older code (the
+      // Supervisor outlives MCP reloads). Ask for its fingerprint; on a mismatch, fall
+      // through and spawn a replacement, which takes the lock over from the stale one.
+      const status = await requestPipe<{ fingerprint?: string }>(this.options.pipeName, { op: 'status' }, REQUEST_TIMEOUT_MS).catch(() => null);
+      if (status !== null && status.fingerprint === supervisorFingerprint()) return;
+    }
     if (!this.spawnIfMissing) throw new Error(`no supervisor is listening on ${this.options.pipeName}`);
     // Not `detached`: that leaves the supervisor with no console, so Windows opens a
     // console window for every console program it starts (node-pty's agent on each
@@ -58,6 +66,16 @@ export class SupervisorClient {
     });
     child.unref();
     await waitForPipe(this.options.pipeName, READY_TIMEOUT_MS);
+    // On a takeover the pipe answers during the handover (the stale daemon holds it
+    // until its shutdown lands), so wait — bounded — until the new fingerprint serves.
+    // ensureStarted runs per request, so a call that rides the old daemon self-corrects.
+    const deadline = Date.now() + READY_TIMEOUT_MS;
+    for (;;) {
+      const status = await requestPipe<{ fingerprint?: string }>(this.options.pipeName, { op: 'status' }, REQUEST_TIMEOUT_MS).catch(() => null);
+      if (status === null || status.fingerprint === supervisorFingerprint()) break;
+      if (Date.now() > deadline) break;
+      await sleep(150);
+    }
   }
 }
 

@@ -15,31 +15,31 @@ const seed = (pipeName: string, pid: string): string => {
 };
 
 describe('supervisor singleton lock', () => {
-  it('is exclusive per pipe name and releasable', () => {
+  it('is exclusive per pipe name and releasable', async () => {
     const pipeName = uniquePipe('lock');
-    const first = acquireSupervisorLock(pipeName);
+    const first = await acquireSupervisorLock(pipeName);
     expect(first).not.toBeNull();
-    expect(acquireSupervisorLock(pipeName)).toBeNull();
+    expect(await acquireSupervisorLock(pipeName)).toBeNull();
     first?.release();
-    const again = acquireSupervisorLock(pipeName);
+    const again = await acquireSupervisorLock(pipeName);
     expect(again).not.toBeNull();
     again?.release();
   });
 
-  it('reclaims a stale lock whose pid is dead', () => {
+  it('reclaims a stale lock whose pid is dead', async () => {
     const pipeName = uniquePipe('lock-dead');
     seed(pipeName, '999999999'); // impossible on Windows (pid space ends far below)
-    const lock = acquireSupervisorLock(pipeName);
+    const lock = await acquireSupervisorLock(pipeName);
     expect(lock).not.toBeNull();
     lock?.release();
   });
 
-  it('reclaims a lock past its staleness window even with a live pid', () => {
+  it('reclaims a lock past its staleness window even with a live pid', async () => {
     const pipeName = uniquePipe('lock-old');
     const path = seed(pipeName, String(process.pid));
     const stale = new Date(Date.now() - 60_000);
     utimesSync(path, stale, stale);
-    const lock = acquireSupervisorLock(pipeName);
+    const lock = await acquireSupervisorLock(pipeName);
     expect(lock).not.toBeNull();
     lock?.release();
   });
@@ -61,5 +61,37 @@ describe('supervisor singleton lock', () => {
     expect(await requestPipe(pipeName, { op: 'status' })).toMatchObject({ ok: true, state: 'stopped' });
     await requestPipe(pipeName, { op: 'shutdown' }).catch(() => {});
     await expectExit(first);
+  }, 30_000);
+
+  // Code-identity takeover: a lock holder running different supervisor code is stale
+  // by definition (it survived a code update through an MCP reload) and a fresh start
+  // must replace it instead of exiting. Same code keeps the singleton guarantee.
+  it('a start with different code takes the lock over from a live holder', async () => {
+    const pipeName = uniquePipe('lock-code');
+    const first = await acquireSupervisorLock(pipeName, 'code-v1');
+    expect(first).not.toBeNull();
+    expect(await acquireSupervisorLock(pipeName, 'code-v1')).toBeNull();
+    const replacement = await acquireSupervisorLock(pipeName, 'code-v2');
+    expect(replacement).not.toBeNull();
+    replacement?.release();
+  });
+
+  it('takes over a legacy lock record that carries no code identity', async () => {
+    const pipeName = uniquePipe('lock-legacy');
+    seed(pipeName, String(process.pid)); // live, fresh — but a bare pid predates fingerprints
+    const lock = await acquireSupervisorLock(pipeName, 'code-v2');
+    expect(lock).not.toBeNull();
+    lock?.release();
+  });
+
+  it('a supervisor started by different code replaces the running daemon', async () => {
+    const pipeName = uniquePipe('lock-cutover');
+    const dirs = makeDirs();
+    const first = startSupervisor({ pipeName, mode: 'happy', ...dirs });
+    await waitForPipe(pipeName, 10_000);
+    const replacement = await acquireSupervisorLock(pipeName, 'different-code');
+    expect(replacement, 'the fresh start must replace the stale-code daemon').not.toBeNull();
+    await expectExit(first, 10_000);
+    replacement?.release();
   }, 30_000);
 });
