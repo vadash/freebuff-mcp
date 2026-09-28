@@ -10,9 +10,8 @@ import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS, UNKNOWN_SCREEN_FALLBACK_MS, UNSOLICITED_ENTER_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOGIN_REQUIRED, LOG_FILENAME, MSG_KEY, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME, mentionsSingleInstance } from './protocol/markers.ts';
-import { CliTerminalScreen, classifyScreen, type ScreenVerdict } from './protocol/screen.ts';
-import { recognizeScreen } from './protocol/signatures.ts';
+import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOG_FILENAME, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME } from './protocol/markers.ts';
+import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 import { writeScreenDump } from './protocol/screenDump.ts';
 import { sleep } from './util.ts';
 
@@ -117,7 +116,7 @@ export class FreebuffDriver {
     freebucksDaily: number | null;
   } {
     const text = this.screenText();
-    const verdict = classifyScreen(text);
+    const { verdict } = classifyScreen(text);
     return {
       hourSessionMinutesLeft: verdict.countdownMinutes,
       freebucksBalance: verdict.freebucksBalance,
@@ -157,7 +156,7 @@ export class FreebuffDriver {
     const deadline = Date.now() + STOP_GRACE_MS;
     while (Date.now() < deadline) {
       if (instance.exited) break;
-      if (classifyScreen(instance.screen.text()).welcomeScreen) break;
+      if (classifyScreen(instance.screen.text()).recognition.screen === 'Welcome screen') break;
       await sleep(POLL_MS);
     }
     this.kill();
@@ -311,11 +310,10 @@ export class FreebuffDriver {
     while (Date.now() < deadline) {
       assertAlive();
       const text = screen.text();
-      if (text.includes(LOGIN_REQUIRED)) {
-        this.loginRequired = true;
-        throw new FreebuffDriverError('needs_login');
-      }
-      const recognition = recognizeScreen(text);
+      // One screen oracle: one classifyScreen per frame names the screen (tolerant
+      // recognition) and parses it (strict); nothing here matches raw literals, so
+      // Drift on any screen degrades through the same table doctor reads.
+      const { recognition, verdict } = classifyScreen(text, dir);
       // Issue #31: degraded frames are dumped like unknown ones — dialog frames too,
       // the Freeze-key dedupe bounds its repaints — into the same per-version folder,
       // so normal use collects the specimens the corpus needs. The dump is the drift
@@ -323,7 +321,11 @@ export class FreebuffDriver {
       if (recognition.screen === null || recognition.level === 'degraded') {
         writeScreenDump(this.options.configDir, text);
       }
-      if (mentionsSingleInstance(text)) {
+      if (recognition.screen === 'login gate') {
+        this.loginRequired = true;
+        throw new FreebuffDriverError('needs_login');
+      }
+      if (recognition.screen === 'Session-in-use dialog') {
         // The Session-in-use dialog clears on ENTER, and any dialog frame is a
         // recognized screen: seeing it stops any running unknown-screen fallback.
         unknownSince = null;
@@ -331,7 +333,6 @@ export class FreebuffDriver {
         await sleep(POLL_MS);
         continue;
       }
-      const verdict = classifyScreen(text, dir);
       if (recognition.screen === null) {
         // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
         // and let the loop re-evaluate; any recognized screen restarts the wait.
@@ -342,12 +343,12 @@ export class FreebuffDriver {
         // The blank-frame paint-transition rule lives inside recognizeScreen.
         unknownSince = null;
       }
-      if (verdict.ready) {
+      if (recognition.screen === 'ready') {
         if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
         this.loginRequired = false;
         return 'ready';
       }
-      if (verdict.continueScreen && !continuePressed) {
+      if (recognition.screen === 'Continue' && !continuePressed) {
         if (idle) {
           // ADR-0001 #3: the Continue screen counts as idle; the supervisor presses it
           // only when a task arrives.
@@ -359,7 +360,7 @@ export class FreebuffDriver {
         continuePressed = true;
         pty.write('\r');
         await sleep(POLL_MS);
-      } else if (verdict.welcomeScreen) {
+      } else if (recognition.screen === 'Welcome screen') {
         // ADR-0004: the input box on the Welcome screen accepts a prompt directly —
         // the first message starts the Hour session.
         if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');

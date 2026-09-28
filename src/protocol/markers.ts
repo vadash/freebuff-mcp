@@ -15,8 +15,6 @@ export const LOGIN_REQUIRED = 'Not authenticated';
 // Single-instance dialogs: the 2026-09 CLI (0.0.198+) says 'Session already in use';
 // older builds said 'Only one freebuff instance is allowed at a time.'
 export const SINGLE_INSTANCE_MARKERS = ['Session already in use', 'Only one freebuff instance is allowed'];
-export const mentionsSingleInstance = (text: string): boolean =>
-  SINGLE_INSTANCE_MARKERS.some((marker) => text.includes(marker));
 
 // Continue screen after an Hour session expires (continue.ansi). 0.1.0 turned the
 // dialog into a credits summary (`Remaining:`, `Credit spending:`); `Session ended`

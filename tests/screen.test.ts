@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { COUNTDOWN_REGEX, KNOWN_ERROR_STRINGS, mentionsSingleInstance } from '../src/protocol/markers.ts';
+import { COUNTDOWN_REGEX, KNOWN_ERROR_STRINGS } from '../src/protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen, countdownMinutes, errorLines, flattenScreen, freezeKey, screenExcerpt } from '../src/protocol/screen.ts';
 
 const dir = new URL('./fixtures/screen/', import.meta.url);
@@ -10,46 +10,50 @@ const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');
 // alone keeps the column in the emulator, wrapping long rows. Replay as the PTY would.
 const screen = async (name: string): Promise<string> => flattenScreen([load(name).replace(/\n/g, '\r\n')]);
 
+// One screen oracle (ADR-0002 completed): classifyScreen returns the recognition and
+// the strict parses; screen identity lives only in recognition.screen.
 const verdict = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  ready: false,
-  connecting: false,
-  welcomeScreen: false,
   banner: null,
   freebucksBalance: null,
   freebucksDaily: null,
   countdownMinutes: null,
   activeModel: null,
-  continueScreen: false,
   ...over,
+});
+const assessed = (screenName: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  recognition: { screen: screenName, level: 'pass', missing: [] },
+  verdict: verdict(over),
 });
 
 describe('classifyScreen', () => {
   // ADR-0004: the model is footer-derived; the pre-0.1.0 screens carried it on the
   // status line, so the old fixture reports no active model.
   it('reports a ready prompt with the Countdown from the status line', async () => {
-    expect(classifyScreen(await screen('0.0.199/ready.ansi'))).toEqual(verdict({ ready: true, countdownMinutes: 58 }));
+    expect(classifyScreen(await screen('0.0.199/ready.ansi'))).toEqual(assessed('ready', { countdownMinutes: 58 }));
   });
 
   it('reports the connecting spinner even when the prompt is rendered below', async () => {
-    expect(classifyScreen(await screen('synthetic/connecting.ansi'))).toEqual(verdict({ connecting: true }));
+    expect(classifyScreen(await screen('synthetic/connecting.ansi'))).toEqual(assessed('connecting'));
   });
 
   it('becomes ready when the cursor-up rewrite erases Connecting', async () => {
-    expect(classifyScreen(await screen('synthetic/connecting-to-ready.ansi'))).toEqual(verdict({ ready: true }));
+    // Synthetic frames are hand-made and recognize degraded (Markers missing); identity
+    // is the contract here — Marker completeness is the corpus tests' bar.
+    expect(classifyScreen(await screen('synthetic/connecting-to-ready.ansi')).recognition.screen).toBe('ready');
   });
 
   it('binds a directory banner only for the expected dir', async () => {
     const text = await screen('synthetic/banner-ready.ansi');
-    expect(classifyScreen(text, 'C:/work/demo-app')).toEqual(verdict({ ready: true, banner: 'C:/work/demo-app' }));
-    expect(classifyScreen(text)).toEqual(verdict({ ready: true }));
-    expect(classifyScreen(text, 'C:/elsewhere')).toEqual(verdict({ ready: true }));
+    expect(classifyScreen(text, 'C:/work/demo-app').verdict).toEqual(verdict({ banner: 'C:/work/demo-app' }));
+    expect(classifyScreen(text).recognition.screen).toBe('ready');
+    expect(classifyScreen(text, 'C:/elsewhere').recognition.screen).toBe('ready');
   });
 
   it('expands the tilde-compressed home dir in the banner line', async () => {
     const text = (await screen('synthetic/banner-ready.ansi')).replace('C:/work/demo-app', '~/work/demo-app');
     const expected = homedir() + '/work/demo-app';
-    expect(classifyScreen(text, expected)).toEqual(verdict({ ready: true, banner: expected }));
-    expect(classifyScreen(text, 'C:/elsewhere')).toEqual(verdict({ ready: true }));
+    expect(classifyScreen(text, expected).verdict).toEqual(verdict({ banner: expected }));
+    expect(classifyScreen(text, 'C:/elsewhere').recognition.screen).toBe('ready');
   });
 });
 
@@ -58,50 +62,38 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
   // the parse invariants that travel with any refresh — never the incidental numbers of
   // the last capture (the remaining balance legitimately drops over a day of use).
   it('reads the Welcome screen: idle, footer model, balance parsed', async () => {
-    const parsed = classifyScreen(await screen('0.1.0/welcome.ansi'));
-    expect(parsed.welcomeScreen).toBe(true);
-    expect(parsed.ready).toBe(false);
+    const { recognition, verdict: parsed } = classifyScreen(await screen('0.1.0/welcome.ansi'));
+    expect(recognition.screen).toBe('Welcome screen');
     expect(parsed.activeModel).toEqual(expect.stringMatching(/.+/));
     expect(parsed.freebucksBalance).toEqual(expect.any(Number));
     expect(parsed.freebucksDaily).toEqual(expect.any(Number));
     expect(parsed.freebucksBalance as number).toBeLessThanOrEqual(parsed.freebucksDaily as number);
     expect(parsed.countdownMinutes).toBeNull();
-    expect(parsed.continueScreen).toBe(false);
   });
 
   it('reads the session screen: ready with Countdown, footer model, remaining balance', async () => {
-    const parsed = classifyScreen(await screen('0.1.0/ready.ansi'));
-    expect(parsed.ready).toBe(true);
-    expect(parsed.welcomeScreen).toBe(false);
+    const { recognition, verdict: parsed } = classifyScreen(await screen('0.1.0/ready.ansi'));
+    expect(recognition.screen).toBe('ready');
     expect(parsed.activeModel).toEqual(expect.stringMatching(/.+/));
     expect(parsed.freebucksBalance).toEqual(expect.any(Number));
     expect(parsed.freebucksDaily).toEqual(expect.any(Number));
     expect(parsed.freebucksBalance as number).toBeLessThanOrEqual(parsed.freebucksDaily as number);
     expect(parsed.countdownMinutes as number).toBeGreaterThan(0);
     expect(parsed.countdownMinutes as number).toBeLessThanOrEqual(60);
-    expect(parsed.continueScreen).toBe(false);
-  });
-
-  it('sees no Continue screen on the Welcome screen', async () => {
-    expect(classifyScreen(await screen('0.1.0/welcome.ansi')).continueScreen).toBe(false);
   });
 
   // The post-expiry look (0.1.2): Countdown gone, box back to the Welcome wording,
   // transcript intact. This is the screen the Supervisor must treat as idle after an
   // Hour session expires.
   it('reads the post-expiry look as the Welcome screen with no Countdown', async () => {
-    const parsed = classifyScreen(await screen('0.1.2/welcome-expired.ansi'));
-    expect(parsed.welcomeScreen).toBe(true);
-    expect(parsed.ready).toBe(false);
+    const { recognition, verdict: parsed } = classifyScreen(await screen('0.1.2/welcome-expired.ansi'));
+    expect(recognition.screen).toBe('Welcome screen');
     expect(parsed.countdownMinutes).toBeNull();
-    expect(parsed.continueScreen).toBe(false);
   });
 
   it('sees the Continue screen; 0.0.199 no longer shows a remaining balance', async () => {
-    const parsed = classifyScreen(await screen('0.0.199/continue.ansi'));
-    expect(parsed.continueScreen).toBe(true);
-    expect(parsed.ready).toBe(false);
-    expect(parsed.welcomeScreen).toBe(false);
+    const { recognition, verdict: parsed } = classifyScreen(await screen('0.0.199/continue.ansi'));
+    expect(recognition.screen).toBe('Continue');
     expect(parsed.freebucksBalance).toBeNull();
     expect(parsed.freebucksDaily).toBeNull();
     expect(parsed.countdownMinutes).toBeNull();
@@ -119,15 +111,12 @@ describe('classifyScreen against the real captured fixtures (issue #11)', () => 
     expect(errorLines(await screen('0.0.199/ready.ansi'))).toEqual([]);
   });
 
-  it('matches the single-instance dialog marker against the real capture', async () => {
-    expect(classifyScreen(await screen('0.0.193/single-instance.ansi')).ready).toBe(false);
-    expect(mentionsSingleInstance(await load('0.0.193/single-instance.ansi'))).toBe(true);
+  it('reads the single-instance dialog wording as the Session-in-use dialog', async () => {
+    expect(classifyScreen(await screen('0.0.193/single-instance.ansi')).recognition.screen).toBe('Session-in-use dialog');
   });
 
-  it('matches the 0.0.198 session-in-use dialog marker against the real capture', async () => {
-    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).ready).toBe(false);
-    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).welcomeScreen).toBe(false);
-    expect(mentionsSingleInstance(await load('0.0.198/session-in-use.ansi'))).toBe(true);
+  it('reads the session-in-use dialog wording as the Session-in-use dialog', async () => {
+    expect(classifyScreen(await screen('0.0.198/session-in-use.ansi')).recognition.screen).toBe('Session-in-use dialog');
   });
 
   it('parses every Countdown wording captured in the wild', () => {
@@ -154,49 +143,47 @@ describe('safe parsing fallbacks (issue #30)', () => {
   };
 
   it('balance missing on the Welcome screen: no balance, the screen still reads idle', async () => {
-    const parsed = classifyScreen(await withoutLinesContaining('0.1.0/welcome.ansi', 'Freebucks remaining'));
-    expect(parsed.welcomeScreen).toBe(true);
+    const { recognition, verdict: parsed } = classifyScreen(await withoutLinesContaining('0.1.0/welcome.ansi', 'Freebucks remaining'));
+    expect(recognition.screen).toBe('Welcome screen');
     expect(parsed.freebucksBalance).toBeNull();
     expect(parsed.freebucksDaily).toBeNull();
   });
 
   it('countdown missing: minutes left unknown, never zero', async () => {
-    const parsed = classifyScreen(await withoutLinesContaining('0.0.199/ready.ansi', '58m left'));
-    expect(parsed.ready).toBe(true);
+    const { recognition, verdict: parsed } = classifyScreen(await withoutLinesContaining('0.0.199/ready.ansi', '58m left'));
+    expect(recognition.screen).toBe('ready');
     expect(parsed.countdownMinutes).toBeNull();
   });
 
   it('footer model missing: no active model reported, the Countdown still parses', async () => {
-    const parsed = classifyScreen(await withoutLinesContaining('0.1.0/ready.ansi', '/model to change'));
-    expect(parsed.ready).toBe(true);
+    const { recognition, verdict: parsed } = classifyScreen(await withoutLinesContaining('0.1.0/ready.ansi', '/model to change'));
+    expect(recognition.screen).toBe('ready');
     expect(parsed.countdownMinutes).toBe(60);
     expect(parsed.activeModel).toBeNull();
   });
 
   it('banner missing on ready: no banner, which fails the Driver dir_mismatch check', async () => {
-    const parsed = classifyScreen(await withoutLinesContaining('synthetic/banner-ready.ansi', 'C:/work/demo-app'), 'C:/work/demo-app');
-    expect(parsed.ready).toBe(true);
+    const { recognition, verdict: parsed } = classifyScreen(await withoutLinesContaining('synthetic/banner-ready.ansi', 'C:/work/demo-app'), 'C:/work/demo-app');
+    expect(recognition.screen).toBe('ready');
     expect(parsed.banner).toBeNull();
   });
 
   it('reads the recognized screen: a dialog over the Welcome screen is the dialog, never idle', async () => {
-    const parsed = classifyScreen(await screen('synthetic/dialog-over-picker.ansi'));
-    expect(parsed.ready).toBe(false);
-    expect(parsed.welcomeScreen).toBe(false);
-    expect(parsed.continueScreen).toBe(false);
+    const { recognition } = classifyScreen(await screen('synthetic/dialog-over-picker.ansi'));
+    expect(recognition.screen).toBe('Session-in-use dialog');
   });
 });
 
 describe('flattenScreen', () => {
   it('renders chunks through one shared screen', async () => {
-    expect(classifyScreen(await flattenScreen([load('0.0.199/ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(verdict({ ready: true, countdownMinutes: 58 }));
+    expect(classifyScreen(await flattenScreen([load('0.0.199/ready.ansi').replace(/\n/g, '\r\n')]))).toEqual(assessed('ready', { countdownMinutes: 58 }));
   });
 
   it('reassembles an escape sequence split mid-sequence', async () => {
     const raw = load('synthetic/split-escape.ansi');
     const cut = raw.indexOf('\x1b[2J') + '\x1b[2'.length;
     const flat = await flattenScreen([raw.slice(0, cut), raw.slice(cut)]);
-    expect(classifyScreen(flat)).toEqual(verdict({ ready: true }));
+    expect(classifyScreen(flat).recognition.screen).toBe('ready');
     expect(flat).toBe(await flattenScreen([raw]));
   });
 
@@ -205,13 +192,13 @@ describe('flattenScreen', () => {
     const cut = raw.indexOf('Connecting') + 'Connect'.length;
     const flat = await flattenScreen([raw.slice(0, cut), raw.slice(cut)]);
     expect(flat).toContain('Connecting...');
-    expect(classifyScreen(flat)).toEqual(verdict({ connecting: true }));
+    expect(classifyScreen(flat)).toEqual(assessed('connecting'));
   });
 
   it('keeps the last repaint', async () => {
     const flat = await flattenScreen([load('synthetic/repaint.ansi')]);
     expect(flat).not.toContain('Connecting');
-    expect(classifyScreen(flat)).toEqual(verdict({ ready: true }));
+    expect(classifyScreen(flat).recognition.screen).toBe('ready');
   });
 
   it('reads the viewport, not scrollback, once output exceeds the screen', async () => {

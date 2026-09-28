@@ -74,8 +74,8 @@ describe('FreebuffDriver', () => {
     // fixture, so the assertions hold the invariants that travel with any refresh: a
     // parseable balance, the footer model, and the probe echoing them.
     expect(driver.screenText()).toMatch(FREEBUCKS_BALANCE_REGEX);
-    const verdict = classifyScreen(driver.screenText());
-    expect(verdict.welcomeScreen).toBe(true);
+    const { recognition, verdict } = classifyScreen(driver.screenText());
+    expect(recognition.screen).toBe('Welcome screen');
     expect(verdict.activeModel).toBe('DeepSeek V4.1 Flash');
     expect(verdict.freebucksBalance).not.toBeNull();
     const probe = driver.probe();
@@ -96,10 +96,9 @@ describe('FreebuffDriver', () => {
     await driver.runTask(dir, 'then expire');
     const deadline = Date.now() + 5_000;
     while (!driver.screenText().includes(CONTINUE_PROMPT) && Date.now() < deadline) await sleep(100);
-    const verdict = classifyScreen(driver.screenText());
-    expect(verdict.continueScreen).toBe(true);
+    const { recognition, verdict } = classifyScreen(driver.screenText());
+    expect(recognition.screen).toBe('Continue');
     expect(verdict.freebucksBalance).toBeNull();
-    expect(verdict.ready).toBe(false);
     expect(await driver.awaitIdle(dir)).toBe('idle');
     expect(driver.screenText()).toContain(CONTINUE_PROMPT);
     await expect(driver.runTask(dir, 'after continue')).resolves.toBe('stub(DeepSeek V4.1 Flash): after continue');
@@ -113,7 +112,7 @@ describe('FreebuffDriver', () => {
       keepAlive: true,
     });
     expect(await driver.awaitIdle(dir)).toBe('idle');
-    const verdict = classifyScreen(driver.screenText());
+    const { verdict } = classifyScreen(driver.screenText());
     expect(verdict.freebucksBalance).toBe(3);
     expect(verdict.freebucksDaily).toBe(25);
     await driver.stop();

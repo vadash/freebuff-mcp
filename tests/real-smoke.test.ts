@@ -13,7 +13,8 @@ import {
   projectKey,
   type TurnBaseline,
 } from '../src/protocol/chatStore.ts';
-import { CHATS_DIRNAME, LOGIN_REQUIRED, PROJECTS_DIRNAME, READY_PROMPT, mentionsSingleInstance } from '../src/protocol/markers.ts';
+import { CHATS_DIRNAME, PROJECTS_DIRNAME, READY_PROMPT } from '../src/protocol/markers.ts';
+import { recognizeScreen } from '../src/protocol/signatures.ts';
 import { workspaceDirFor } from '../src/workspace.ts';
 import { captureFixturesDir, RealCli, realChatsRoot, snapshotChats } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
@@ -198,11 +199,15 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
       // dialog a stale claim raises.
       await cli.waitScreen(
         'welcome, resumed ready box, login gate, or Session-in-use dialog',
-        (t) => t.includes(READY_PROMPT) || t.includes(LOGIN_REQUIRED) || mentionsSingleInstance(t),
+        (t) => {
+          const screen = recognizeScreen(t).screen;
+          return screen === 'Welcome screen' || screen === 'ready' || screen === 'login gate' || screen === 'Session-in-use dialog';
+        },
         180_000,
       );
-      if (cli.text().includes(LOGIN_REQUIRED)) throw new Error('freebuff is not logged in; log in and rerun the capture');
-      if (mentionsSingleInstance(cli.text())) {
+      const landed = recognizeScreen(cli.text()).screen;
+      if (landed === 'login gate') throw new Error('freebuff is not logged in; log in and rerun the capture');
+      if (landed === 'Session-in-use dialog') {
         await recoverStaleLockDialog(cli, 'spawn');
         await cli.waitScreen('welcome or resumed ready box', (t) => t.includes(READY_PROMPT), 120_000);
       }

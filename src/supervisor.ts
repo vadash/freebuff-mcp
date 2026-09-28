@@ -5,7 +5,7 @@ import { ERROR_LOG_PATH, ERROR_LOG_POLL_MS, FAILURE_SCREEN_LINES, FREEZE_POLL_MA
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
-import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenVerdict } from './protocol/screen.ts';
+import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenAssessment } from './protocol/screen.ts';
 import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
 import { corpusVersions } from './protocol/corpus.ts';
 import { hasScreenDump, metadataVersion } from './protocol/screenDump.ts';
@@ -151,8 +151,8 @@ export class Supervisor {
       case 'status': {
         const probe = this.driver.probe();
         // Observed on the ready Screen status line; a dead Instance observes nothing.
-        const verdict = this.driver.isAlive() ? this.verdict() : null;
-        const activeModel = verdict?.activeModel ?? null;
+        const assessed = this.driver.isAlive() ? this.assessed() : null;
+        const activeModel = assessed?.verdict.activeModel ?? null;
         // Issue #31: Drift on record for the installed CLI version — a Screen dump for
         // it (the settle loop files unknown and degraded frames there) — while the
         // fixture corpus does not cover the version yet: promoting a dump into the
@@ -164,7 +164,7 @@ export class Supervisor {
         reply({
           ok: true,
           kind: 'status',
-          state: this.observedState(verdict ?? undefined),
+          state: this.observedState(assessed ?? undefined),
           workspaceDir: this.workspace,
           targetDir: this.targetDir,
           queueDepth: this.queue.length,
@@ -232,20 +232,21 @@ export class Supervisor {
     return { ok: true, kind: 'ok' };
   }
 
-  private verdict(): ScreenVerdict {
+  private assessed(): ScreenAssessment {
     return classifyScreen(this.driver.screenText());
   }
 
-  private observedState(verdict = this.verdict()): SupervisorState {
+  private observedState(assessed = this.assessed()): SupervisorState {
     if (this.active !== null && !this.active.answered) return 'busy';
     if (this.spawning) return 'spawning';
-    return this.screenState(verdict);
+    return this.screenState(assessed);
   }
 
-  private screenState(verdict = this.verdict()): SupervisorState {
+  private screenState(assessed = this.assessed()): SupervisorState {
     if (!this.driver.isAlive()) return 'stopped';
-    if (verdict.ready) return 'ready';
-    if (verdict.welcomeScreen || verdict.continueScreen) return 'idle';
+    const { screen } = assessed.recognition;
+    if (screen === 'ready') return 'ready';
+    if (screen === 'Welcome screen' || screen === 'Continue') return 'idle';
     return 'stopped';
   }
 

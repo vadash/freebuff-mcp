@@ -4,7 +4,7 @@ import headless from '@xterm/headless';
 import { homedir } from 'node:os';
 import { SCREEN_COLS, SCREEN_ROWS } from '../config.ts';
 import { COUNTDOWN_REGEX, FOOTER_SEPARATOR, FREEBUCKS_BALANCE_REGEX, FREEBUCKS_LEFT_REGEX, KNOWN_ERROR_STRINGS, MODEL_FOOTER_HINT, STATUS_SEPARATOR } from './markers.ts';
-import { recognizeScreen } from './signatures.ts';
+import { recognizeScreen, type Recognition } from './signatures.ts';
 
 const { Terminal } = headless;
 
@@ -29,16 +29,21 @@ export class CliTerminalScreen {
   }
 }
 
+/** Strict parses of the Screen text — values only. Screen identity is never here:
+ *  it lives only in recognition.screen (one screen oracle, ADR-0002). */
 export interface ScreenVerdict {
-  ready: boolean;
-  connecting: boolean;
-  welcomeScreen: boolean;
   banner: string | null;
   activeModel: string | null;
   freebucksBalance: number | null;
   freebucksDaily: number | null;
   countdownMinutes: number | null;
-  continueScreen: boolean;
+}
+
+/** The one screen assessment: which screen is showing (tolerant recognition) plus the
+ *  strict parses. Callers branch on recognition.screen and read verdict values. */
+export interface ScreenAssessment {
+  recognition: Recognition;
+  verdict: ScreenVerdict;
 }
 
 /** Minutes left in the Hour session from the Countdown line, or null. `m:ss left` floors.
@@ -68,14 +73,11 @@ export const footerModel = (text: string): string | null => {
   return model === '' ? null : model;
 };
 
-export function classifyScreen(text: string, expectedDir?: string): ScreenVerdict {
-  // Issue #30: the classifier reads the recognized screen from the recognition function
-  // instead of re-testing literals; recognition is tolerant (priority, regions,
-  // thresholds), the parsing below stays strict and fails safely per field.
-  const recognized = recognizeScreen(text).screen;
+export function classifyScreen(text: string, expectedDir?: string): ScreenAssessment {
+  // One recognition pass per call: recognition is tolerant (priority, regions,
+  // thresholds), the parsing below stays strict and fails safely per field (issue #30).
+  const recognition = recognizeScreen(text);
   const lines = text.split('\n');
-  const connecting = recognized === 'connecting';
-  const ready = recognized === 'ready';
 
   // Strict banner parse: ready or Welcome without the expected dir line yields null and
   // the Driver fails dir_mismatch rather than working in the wrong directory.
@@ -89,18 +91,18 @@ export function classifyScreen(text: string, expectedDir?: string): ScreenVerdic
   const balance = FREEBUCKS_BALANCE_REGEX.exec(text);
   const left = FREEBUCKS_LEFT_REGEX.exec(text);
   return {
-    ready,
-    connecting,
-    welcomeScreen: recognized === 'Welcome screen',
-    banner,
-    // ADR-0004: the model is never chosen, only observed — the footer carries it on the
-    // Welcome screen and while a session runs. Mid-Turn (neither recognized) reports
-    // null rather than a guess.
-    activeModel: ready || recognized === 'Welcome screen' ? footerModel(text) : null,
-    freebucksBalance: balance !== null ? Number(balance[1]) : left !== null ? Number(left[1]) : null,
-    freebucksDaily: balance !== null ? Number(balance[2]) : null,
-    countdownMinutes: countdownMinutes(text),
-    continueScreen: recognized === 'Continue',
+    recognition,
+    verdict: {
+      banner,
+      // ADR-0004: the model is never chosen, only observed — the footer carries it on
+      // the Welcome screen and while a session runs. Mid-Turn (neither recognized)
+      // reports null rather than a guess.
+      activeModel:
+        recognition.screen === 'ready' || recognition.screen === 'Welcome screen' ? footerModel(text) : null,
+      freebucksBalance: balance !== null ? Number(balance[1]) : left !== null ? Number(left[1]) : null,
+      freebucksDaily: balance !== null ? Number(balance[2]) : null,
+      countdownMinutes: countdownMinutes(text),
+    },
   };
 }
 
