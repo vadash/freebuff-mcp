@@ -155,7 +155,7 @@ export class TurnRunner implements TurnRunnerLike {
   // strips timer lines, so a ticking Countdown resets nothing (issue #31).
   private watchFreeze(onFrozen: () => void): { stop: () => void } {
     let lastLog = this.driver.newestLogSize(this.workspace);
-    let lastScreen = freezeKey(this.driver.screenText());
+    let lastScreen = freezeKey(this.driver.observe().screenText);
     let lastChange = this.clock.now();
     const pollMs = Math.min(FREEZE_POLL_MAX_MS, Math.max(FREEZE_POLL_MIN_MS, Math.floor(this.freezeMs / 4)));
     const timer = this.clock.setInterval(() => {
@@ -165,7 +165,7 @@ export class TurnRunner implements TurnRunnerLike {
         return;
       }
       const log = this.driver.newestLogSize(this.workspace);
-      const screen = freezeKey(this.driver.screenText());
+      const screen = freezeKey(this.driver.observe().screenText);
       if (log !== lastLog || screen !== lastScreen) {
         lastLog = log;
         lastScreen = screen;
@@ -188,11 +188,11 @@ export class TurnRunner implements TurnRunnerLike {
     const workspace = this.workspace;
     const tally = (): Map<string, number> => {
       const counts = new Map<string, number>();
-      for (const line of errorLines(this.driver.screenText())) counts.set(line, (counts.get(line) ?? 0) + 1);
+      for (const line of errorLines(this.driver.observe().screenText)) counts.set(line, (counts.get(line) ?? 0) + 1);
       return counts;
     };
     // A dead Instance's last Screen is not what the respawned one will show.
-    const baseline = this.driver.isAlive() ? tally() : new Map<string, number>();
+    const baseline = this.driver.observe().alive ? tally() : new Map<string, number>();
     const logged = new Set<string>();
     const scan = (): void => {
       const lines = [...tally()]
@@ -219,7 +219,7 @@ export class TurnRunner implements TurnRunnerLike {
 
   // The verdict carries the last Screen lines for the caller, as the reply string.
   private failure(reason: TurnFailureReason, detail: string): TurnOutcome {
-    const excerpt = screenExcerpt(this.driver.screenText(), FAILURE_SCREEN_LINES);
+    const excerpt = screenExcerpt(this.driver.observe().screenText, FAILURE_SCREEN_LINES);
     return {
       ok: false,
       reason,

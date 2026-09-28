@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { FreebuffDriver } from '../src/driver.ts';
 import { CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX } from '../src/protocol/markers.ts';
 import { classifyScreen } from '../src/protocol/screen.ts';
+import { writeScreenDump } from '../src/protocol/screenDump.ts';
 import { readStubInputs, type StubInput } from './helpers/harness.ts';
 import { sleep } from '../src/util.ts';
 
@@ -67,28 +68,30 @@ describe('FreebuffDriver', () => {
     expect(driver.needsLogin()).toBe(true);
   }, 30_000);
 
-  it('idles on the replayed Welcome screen without pressing enter and probes the balance', async () => {
+  it('idles on the replayed Welcome screen without pressing enter and observes the snapshot', async () => {
     const { driver, dir } = harness('happy', undefined, { keepAlive: true });
     expect(await driver.awaitIdle(dir)).toBe('idle');
     // The stub replays the captured Welcome screen verbatim, balance numbers from the
     // fixture, so the assertions hold the invariants that travel with any refresh: a
-    // parseable balance, the footer model, and the probe echoing them.
+    // parseable balance, the footer model, and the observation carrying the facts.
     expect(driver.screenText()).toMatch(FREEBUCKS_BALANCE_REGEX);
     const { recognition, verdict } = classifyScreen(driver.screenText());
     expect(recognition.screen).toBe('Welcome screen');
     expect(verdict.activeModel).toBe('DeepSeek V4.1 Flash');
-    expect(verdict.freebucksBalance).not.toBeNull();
-    const probe = driver.probe();
-    expect(probe.freebucksDaily).toBe(verdict.freebucksDaily);
-    expect(probe.freebucksBalance).toBe(verdict.freebucksBalance);
-    expect(probe.hourSessionMinutesLeft).toBeNull();
+    const observation = driver.observe();
+    expect(observation.alive).toBe(true);
+    expect(observation.pid).toEqual(expect.any(Number));
+    expect(observation.needsLogin).toBe(false);
+    // The Welcome screen: no Hour session is ticking for this directory.
+    expect(observation.hourSessionMinutesLeft).toBeNull();
+    expect(observation.freebucksDaily).toEqual(expect.any(Number));
     await driver.stop();
   }, 30_000);
 
   it('exposes the Countdown minutes from the env-controlled stub status line', async () => {
     const { driver, dir } = harness('happy', undefined, { stubEnv: { FREEBUFF_STUB_COUNTDOWN_MIN: '37' } });
     await driver.runTask(dir, 'count me');
-    expect(driver.probe().hourSessionMinutesLeft).toBe(37);
+    expect(driver.observe().hourSessionMinutesLeft).toBe(37);
   }, 30_000);
 
   it('replays the captured Continue screen after a turn in expire mode', async () => {
@@ -115,7 +118,47 @@ describe('FreebuffDriver', () => {
     const { verdict } = classifyScreen(driver.screenText());
     expect(verdict.freebucksBalance).toBe(3);
     expect(verdict.freebucksDaily).toBe(25);
+    expect(driver.observe().freebucksDaily).toBe(25);
     await driver.stop();
+  }, 30_000);
+
+  // Issue #31: Drift on record — a Screen dump for the installed version (here the
+  // metadata-less 'unknown') while no corpus folder covers that version.
+  it('reports drift while a Screen dump exists for the installed version and the corpus lacks it', async () => {
+    const { driver, configDir } = harness('happy', undefined, { keepAlive: true });
+    expect(driver.screenDrift()).toBe(false);
+    writeScreenDump(configDir, 'Quantum flux calibration panel');
+    expect(driver.screenDrift()).toBe(true);
+    // A corpus-covered installed version masks the dump: promoting a dump into the
+    // corpus is what clears the signal (issue #31).
+    writeFileSync(join(configDir, 'freebuff-metadata.json'), JSON.stringify({ version: '0.1.0' }));
+    writeScreenDump(configDir, 'Quantum flux calibration panel');
+    expect(driver.screenDrift()).toBe(false);
+    await driver.stop();
+  }, 30_000);
+
+  // The process facts the Supervisor composes its state from: no Instance, an Instance
+  // settled in the workspace, no Instance again. The mid-spawn 'spawning' window is a
+  // Driver-internal counter; its composition onto status is pinned in-process in
+  // supervisor-policy.test.ts, and the clear-on-failed-bring-up right below.
+  it('reports the process state: stopped, live, stopped again', async () => {
+    const { driver, dir } = harness('happy', undefined, { keepAlive: true });
+    expect(driver.instanceState()).toBe('stopped');
+    await driver.awaitIdle(dir);
+    expect(driver.instanceState()).toBe('live');
+    await driver.stop();
+    expect(driver.instanceState()).toBe('stopped');
+  }, 30_000);
+
+  // The spawn counter must not leak past a failed bring-up: a stuck 'spawning' would
+  // pin status.state forever.
+  it('clears the spawning window when a bring-up fails', async () => {
+    const { driver, dir } = harness('unknown', { readyMs: 1_000 }, { keepAlive: true });
+    await expect(driver.awaitIdle(dir)).rejects.toMatchObject({ reason: 'ready_timeout' });
+    // The Instance survived the spawn; only the settle failed, so it reads 'live'.
+    expect(driver.instanceState()).toBe('live');
+    await driver.stop();
+    expect(driver.instanceState()).toBe('stopped');
   }, 30_000);
 
   // Issue #21: the settle loop dumps a screen matching no known class once per Freeze

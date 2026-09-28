@@ -1,12 +1,5 @@
 /// <reference lib="es2024" />
-import { FreebuffDriverError, type DriverFailureReason, type DriverLike } from '../../src/driver.ts';
-
-/** The probe payload the Supervisor relays onto status, verbatim. */
-export interface ScriptedProbe {
-  hourSessionMinutesLeft: number | null;
-  freebucksBalance: number | null;
-  freebucksDaily: number | null;
-}
+import { FreebuffDriverError, type DriverFailureReason, type DriverLike, type Observation } from '../../src/driver.ts';
 
 /** One scripted `runTask` outcome; `hang` never settles until the test releases it. */
 export type RunScript =
@@ -30,7 +23,12 @@ export class ScriptedDriver implements DriverLike {
   logSize = 0;
   needsLoginFlag = false;
   pid = 4242;
-  probeResult: ScriptedProbe = { hourSessionMinutesLeft: null, freebucksBalance: null, freebucksDaily: null };
+  hourSessionMinutesLeft: number | null = null;
+  freebucksDaily: number | null = null;
+  // The Drift verdict status relays; the real Driver derives it from the dump record.
+  drifted = false;
+  // The process state; the real Driver counts its spawn window internally.
+  spawning = false;
 
   // What the Supervisor submitted and how often it drove each seam call.
   prompts: string[] = [];
@@ -94,24 +92,25 @@ export class ScriptedDriver implements DriverLike {
 
   // -- DriverLike -----------------------------------------------------------
 
-  isAlive(): boolean {
-    return this.alive;
+  /** One snapshot per read, assembled from the branching inputs; no disk access. */
+  observe(): Observation {
+    return {
+      alive: this.alive,
+      screenText: this.screen,
+      pid: this.alive ? this.pid : null,
+      needsLogin: this.needsLoginFlag,
+      hourSessionMinutesLeft: this.hourSessionMinutesLeft,
+      freebucksDaily: this.freebucksDaily,
+    };
   }
 
-  screenText(): string {
-    return this.screen;
+  screenDrift(): boolean {
+    return this.drifted;
   }
 
-  needsLogin(): boolean {
-    return this.needsLoginFlag;
-  }
-
-  instancePid(): number | null {
-    return this.alive ? this.pid : null;
-  }
-
-  probe(): ScriptedProbe {
-    return this.probeResult;
+  instanceState(): 'stopped' | 'spawning' | 'live' {
+    if (!this.alive) return 'stopped';
+    return this.spawning ? 'spawning' : 'live';
   }
 
   newestLogSize(_dir: string): number {

@@ -265,4 +265,26 @@ describe('supervisor policies (in-process, canned Turn verdicts)', () => {
     expect(scripted.calls.newConversation).toBe(1);
     expect(scripted.calls.runTask).toBe(0);
   });
+
+  // Issue #31 on the wire: the Drift verdict is the Driver's; status relays it.
+  it('relays the Driver screenDrift verdict onto status', async () => {
+    boot();
+    scripted.drifted = true;
+    await expect(request(sup!, { op: 'status' }).promise).resolves.toMatchObject({ ok: true, screenDrift: true });
+    scripted.drifted = false;
+    await expect(request(sup!, { op: 'status' }).promise).resolves.toMatchObject({ ok: true, screenDrift: false });
+  });
+
+  // Process facts are the Driver's (spawning, stopped); ready/idle stay screen-derived.
+  it('reports spawning from the Driver process state and ready from the Screen', async () => {
+    boot();
+    scripted.spawning = true;
+    await expect(request(sup!, { op: 'status' }).promise).resolves.toMatchObject({ ok: true, state: 'spawning' });
+    scripted.spawning = false;
+    scripted.alive = false;
+    await expect(request(sup!, { op: 'status' }).promise).resolves.toMatchObject({ ok: true, state: 'stopped' });
+    scripted.alive = true;
+    scripted.screen = readyScreen;
+    await expect(request(sup!, { op: 'status' }).promise).resolves.toMatchObject({ ok: true, state: 'ready' });
+  });
 });

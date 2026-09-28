@@ -105,6 +105,10 @@ goes in as one bracketed paste and is submitted once.
 
 ### Observation
 
+- **Observation**: the snapshot the Driver hands the Supervisor on every read:
+  the Screen text exactly as the Driver and the Watchdog read it, Instance
+  liveness and pid, the login flag, and the Hour-session facts observed on the
+  Screen. Memory-only; the Drift record is a separate, disk-backed read.
 - **Screen**: the rendered terminal, flattened to text. Used for state only,
   never for the Answer.
 - **Chat store**: freebuff's on-disk chat logs (`log.jsonl` per chat dir).

@@ -2,12 +2,9 @@ import { statSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { resolve } from 'node:path';
 import { ERROR_LOG_PATH, FREEZE_THRESHOLD_MS, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
-import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
-import type { DriverLike, DriverOptions } from './driver.ts';
+import { FreebuffDriver, type DriverLike } from './driver.ts';
 import { classifyScreen, type ScreenAssessment } from './protocol/screen.ts';
 import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
-import { corpusVersions } from './protocol/corpus.ts';
-import { hasScreenDump, metadataVersion } from './protocol/screenDump.ts';
 import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
@@ -19,12 +16,10 @@ export type SupervisorState = 'stopped' | 'spawning' | 'idle' | 'ready' | 'busy'
 
 export interface SupervisorConfig {
   pipeName?: string;
-  // The real Driver's options: they build the default Driver when `driver` is unset;
-  // `configDir` is read even with a `driver` injected (it locates the Screen-dump
-  // record `status` reports).
-  driverOptions?: DriverOptions;
-  // C4 seam: an injected Driver for in-process policy tests; production leaves it unset.
-  driver?: DriverLike;
+  // The Driver seam: process facts (instanceState), the Observation snapshot, and the
+  // Drift verdict. Dependencies are accepted, not created: main builds the real
+  // FreebuffDriver from its options; tests inject a scripted one.
+  driver: DriverLike;
   // The Turn seam: an injected runner resolves canned verdicts with no timers in
   // policy tests; production leaves it unset and gets the real TurnRunner.
   turnRunner?: TurnRunnerLike;
@@ -85,7 +80,6 @@ interface QueuedTask {
 }
 
 export class Supervisor {
-  private spawning = false;
   // The fixed per-pipe directory every Instance spawns in; the caller's repo is the
   // `repo` junction inside it, swapped at idle time when run_prompt changes target.
   private readonly workspace: string;
@@ -94,21 +88,15 @@ export class Supervisor {
   private active: QueuedTask | null = null;
   private startingConversation = false;
   private readonly driver: DriverLike;
-  // The options the Driver runs with; `configDir` locates the Screen-dump record.
-  private readonly driverOptions: DriverOptions;
   // Runs the Task's Turn: submit, Watchdog, verdict. The Supervisor keeps the Queue,
   // the replies and the respawn policy.
   private readonly runner: TurnRunnerLike;
   private readonly pipeName: string;
 
-  constructor(config: SupervisorConfig = {}) {
+  constructor(config: SupervisorConfig) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.workspace = workspaceDirFor(this.pipeName);
-    this.driverOptions = {
-      ...(config.driverOptions ?? defaultDriverOptions()),
-      keepAlive: true,
-    };
-    this.driver = config.driver ?? new FreebuffDriver(this.driverOptions);
+    this.driver = config.driver;
     this.runner = config.turnRunner ?? new TurnRunner({
       driver: this.driver,
       workspace: this.workspace,
@@ -143,21 +131,13 @@ export class Supervisor {
       case 'screen':
         // Issue #21: the Instance's Screen exactly as the Driver and Watchdog read
         // it, in every supervisor state; '' while stopped with nothing painted yet.
-        reply({ ok: true, kind: 'screen', screen: this.driver.screenText() });
+        reply({ ok: true, kind: 'screen', screen: this.driver.observe().screenText });
         break;
       case 'status': {
-        const probe = this.driver.probe();
+        const observed = this.driver.observe();
         // Observed on the ready Screen status line; a dead Instance observes nothing.
-        const assessed = this.driver.isAlive() ? this.assessed() : null;
+        const assessed = observed.alive ? this.assessed(observed.screenText) : null;
         const activeModel = assessed?.verdict.activeModel ?? null;
-        // Issue #31: Drift on record for the installed CLI version — a Screen dump for
-        // it (the settle loop files unknown and degraded frames there) — while the
-        // fixture corpus does not cover the version yet: promoting a dump into the
-        // corpus is what clears the signal. Keyed by the installed version, the same
-        // folder name the dump writer uses ('unknown' when the metadata file is
-        // unreadable), so an update shipping a different version starts clean. Read
-        // from disk on every status, so an intermittent screen never flickers it.
-        const driftVersion = metadataVersion(this.driverOptions.configDir) ?? 'unknown';
         reply({
           ok: true,
           kind: 'status',
@@ -166,11 +146,14 @@ export class Supervisor {
           targetDir: this.targetDir,
           queueDepth: this.queue.length,
           activeModel,
-          instancePid: this.driver.instancePid(),
-          hourSessionMinutesLeft: probe.hourSessionMinutesLeft,
-          freebucksDaily: probe.freebucksDaily,
-          needsLogin: this.driver.needsLogin(),
-          screenDrift: hasScreenDump(this.driverOptions.configDir, driftVersion) && !corpusVersions().includes(driftVersion),
+          instancePid: observed.pid,
+          hourSessionMinutesLeft: observed.hourSessionMinutesLeft,
+          freebucksDaily: observed.freebucksDaily,
+          needsLogin: observed.needsLogin,
+          // The Drift verdict is the Driver's (issue #31): it owns the dump record and
+          // the configDir; disk-backed, read per status so an intermittent screen
+          // never flickers it.
+          screenDrift: this.driver.screenDrift(),
           fingerprint: supervisorFingerprint(),
         });
         break;
@@ -178,9 +161,10 @@ export class Supervisor {
       case 'doctor': {
         // The live check needs an idle Instance's Screen; otherwise it is skipped, not passed.
         // An Instance whose Markers drifted may read as 'stopped', so check any live idle one.
-        const observed = this.observedState();
-        const recognized = this.driver.isAlive() && observed !== 'busy' && observed !== 'spawning'
-          ? recognizeScreen(this.driver.screenText())
+        const state = this.observedState();
+        const snapshot = this.driver.observe();
+        const recognized = snapshot.alive && state !== 'busy' && state !== 'spawning'
+          ? recognizeScreen(snapshot.screenText)
           : null;
         reply(
           recognized === null
@@ -228,18 +212,23 @@ export class Supervisor {
     return { ok: true, kind: 'ok' };
   }
 
-  private assessed(): ScreenAssessment {
-    return classifyScreen(this.driver.screenText());
+  private assessed(text = this.driver.observe().screenText): ScreenAssessment {
+    return classifyScreen(text);
   }
 
   private observedState(assessed = this.assessed()): SupervisorState {
     if (this.active !== null && !this.active.answered) return 'busy';
-    if (this.spawning) return 'spawning';
+    // Process facts come from the Driver; ready/idle stay screen-derived here until
+    // screenDisposition moves screen meaning into the protocol table.
+    const instance = this.driver.instanceState();
+    if (instance === 'spawning') return 'spawning';
+    if (instance === 'stopped') return 'stopped';
     return this.screenState(assessed);
   }
 
+  // Only reached with a live Instance (observedState handled 'stopped'); a live
+  // Instance showing an unrecognized Screen reads as 'stopped' all the same.
   private screenState(assessed = this.assessed()): SupervisorState {
-    if (!this.driver.isAlive()) return 'stopped';
     const { screen } = assessed.recognition;
     if (screen === 'ready') return 'ready';
     if (screen === 'Welcome screen' || screen === 'Continue') return 'idle';
@@ -312,22 +301,20 @@ export class Supervisor {
     if (this.active !== null || this.startingConversation || this.queue.length === 0) return;
     const task = this.queue.shift()!;
     this.active = task;
-    this.spawning = !this.driver.isAlive();
     void this.runOne(task);
   }
 
   // A fresh Instance in the workspace, idle on the Welcome screen or ready (an
   // unexpired Hour session resumes). A failed respawn leaves the supervisor stopped;
-  // the next Task spawns.
+  // the next Task spawns. status reads 'stopped' while the old Instance dies (the
+  // truthful process fact) and 'spawning' from the fresh spawn until awaitIdle
+  // settles it.
   private async respawn(): Promise<void> {
-    this.spawning = true;
     await this.driver.stop();
     try {
       await this.driver.awaitIdle(this.workspace);
-      this.spawning = false;
     } catch {
       this.driver.kill();
-      this.spawning = false;
     }
   }
 
@@ -340,7 +327,6 @@ export class Supervisor {
     try {
       const outcome = await this.runner.run(task.prompt);
       if (outcome.ok) {
-        this.spawning = false;
         task.reply({ ok: true, kind: 'answer', answer: outcome.answer });
       } else if (outcome.reason === 'deadline' || outcome.reason === 'frozen' || outcome.reason === 'crashed') {
         task.answered = true;
@@ -348,12 +334,10 @@ export class Supervisor {
         await this.respawn();
       } else if (outcome.reason === 'no_answer') {
         // The Turn ended; the Instance is idle and stays up for the next Task.
-        this.spawning = false;
         task.reply({ ok: false, kind: 'error', error: outcome.message });
       } else {
         // A cancelled Task or a Driver error: kill; the next Task spawns on demand.
         this.driver.kill();
-        this.spawning = false;
         task.reply({
           ok: false,
           kind: 'error',
@@ -362,7 +346,6 @@ export class Supervisor {
       }
     } catch (error) {
       this.driver.kill();
-      this.spawning = false;
       task.reply({ ok: false, kind: 'error', error: errorMessage(error) });
     } finally {
       this.active = null;
@@ -420,7 +403,7 @@ if (isMainModule(import.meta.url)) {
     // takeover start must not — the stale daemon's socket is still draining, so the
     // reachability probe would misread this start as the duplicate.
     if (!lock.replaced && (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS))) process.exit(0);
-    const supervisor = new Supervisor({ pipeName, driverOptions, taskTimeoutMs, errorLogPath });
+    const supervisor = new Supervisor({ pipeName, driver: new FreebuffDriver(driverOptions), taskTimeoutMs, errorLogPath });
     try {
       await supervisor.listen();
     } catch (error) {
