@@ -11,13 +11,13 @@ export const isMainModule = (moduleUrl: string): boolean =>
 
 export interface MainOptions {
   pipeName: string;
-  driver: DriverOptions;
+  driverOptions: DriverOptions;
   taskTimeoutMs: number;
 }
 
 export const mainOptions = (): MainOptions => ({
   pipeName: process.env.FREEBUFF_SUPERVISOR_PIPE ?? SUPERVISOR_PIPE,
-  driver: process.env.FREEBUFF_DRIVER_JSON
+  driverOptions: process.env.FREEBUFF_DRIVER_JSON
     ? (JSON.parse(process.env.FREEBUFF_DRIVER_JSON) as DriverOptions)
     : defaultDriverOptions(),
   taskTimeoutMs: Number(process.env.FREEBUFF_TASK_TIMEOUT_MS) || TASK_TIMEOUT_MS,

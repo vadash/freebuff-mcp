@@ -1,6 +1,6 @@
 # Tests
 
-Vitest picks up every `*.test.ts` / `*.test.mjs` here. Three tiers:
+Vitest picks up every `*.test.ts` / `*.test.mjs` here. Four tiers:
 
 - **Pure**: modules tested through their exported functions, no processes:
   `screen`, `chatStore`, `workspace`, `supervisor-lock`, `doctor`, `capture`,
@@ -9,8 +9,12 @@ Vitest picks up every `*.test.ts` / `*.test.mjs` here. Three tiers:
   emulator and signature table. See
   [fixtures/screen/AGENTS.md](fixtures/screen/AGENTS.md) before changing a
   fixture, Marker or signature.
-- **Stub e2e**: `driver`, `supervisor` and `server` tests run the real
-  processes against `stub-freebuff.mjs`, a protocol-faithful fake of the
+- **Supervisor policy**: `supervisor-policy.test.ts` drives the real
+  Supervisor in-process on fake timers through `helpers/scriptedDriver.ts`, a
+  `DriverLike` test adapter (the C4 seam). Freeze, deadline, crash, respawn,
+  queue and purge policies run on virtual time here — no processes.
+- **Stub e2e**: `driver`, `server`, and the `supervisor` daemon smoke run the
+  real processes against `stub-freebuff.mjs`, a protocol-faithful fake of the
   freebuff TUI. `helpers/harness.ts` starts a Supervisor or MCP server on a
   unique pipe per test. The stub's header comment lists every
   `FREEBUFF_STUB_*` knob.

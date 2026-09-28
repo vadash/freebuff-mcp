@@ -18,7 +18,8 @@ const supervisorEntry = resolve(dirname(fileURLToPath(import.meta.url)), 'superv
 
 export interface SupervisorClientOptions {
   pipeName: string;
-  driver: DriverOptions;
+  // The Driver options serialized into FREEBUFF_DRIVER_JSON when this client spawns the daemon.
+  driverOptions: DriverOptions;
   taskTimeoutMs: number;
   spawnIfMissing?: boolean;
 }
@@ -58,7 +59,7 @@ export class SupervisorClient {
         ...process.env,
         FREEBUFF_SUPERVISOR_PIPE: this.options.pipeName,
         FREEBUFF_TASK_TIMEOUT_MS: String(this.options.taskTimeoutMs),
-        FREEBUFF_DRIVER_JSON: JSON.stringify(this.options.driver),
+        FREEBUFF_DRIVER_JSON: JSON.stringify(this.options.driverOptions),
       },
       stdio: 'ignore',
       windowsHide: true,

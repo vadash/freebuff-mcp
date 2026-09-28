@@ -17,6 +17,26 @@ import { sleep } from './util.ts';
 
 export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login' | 'no_answer';
 
+// The Supervisor's seam (C4): everything the Supervisor needs from the Driver, and
+// nothing of the PTY mechanics. Tests inject a scripted implementation; production
+// leaves `SupervisorConfig.driver` unset and gets the real FreebuffDriver. The error
+// channel stays FreebuffDriverError with the reason union above.
+export type DriverLike = Pick<
+  FreebuffDriver,
+  | 'isAlive'
+  | 'screenText'
+  | 'needsLogin'
+  | 'instancePid'
+  | 'probe'
+  | 'newestLogSize'
+  | 'kill'
+  | 'stop'
+  | 'cancelActive'
+  | 'newConversation'
+  | 'awaitIdle'
+  | 'runTask'
+>;
+
 export class FreebuffDriverError extends Error {
   readonly reason: DriverFailureReason;
   constructor(reason: DriverFailureReason, detail?: string) {

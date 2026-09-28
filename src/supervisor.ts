@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
 import { ERROR_LOG_PATH, ERROR_LOG_POLL_MS, FAILURE_SCREEN_LINES, FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
-import type { DriverOptions } from './driver.ts';
+import type { DriverLike, DriverOptions } from './driver.ts';
 import { FreebuffDriverError } from './driver.ts';
 import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenAssessment } from './protocol/screen.ts';
 import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
@@ -19,9 +19,13 @@ export type SupervisorState = 'stopped' | 'spawning' | 'idle' | 'ready' | 'busy'
 
 export interface SupervisorConfig {
   pipeName?: string;
-  driver?: DriverOptions;
+  // The real Driver's options: they build the default Driver when `driver` is unset;
+  // `configDir` is read even with a `driver` injected (it locates the Screen-dump
+  // record `status` reports).
+  driverOptions?: DriverOptions;
+  // C4 seam: an injected Driver for in-process policy tests; production leaves it unset.
+  driver?: DriverLike;
   taskTimeoutMs?: number;
-  freezeThresholdMs?: number;
   errorLogPath?: string;
 }
 
@@ -99,7 +103,7 @@ export class Supervisor {
   private readonly queue: QueuedTask[] = [];
   private active: QueuedTask | null = null;
   private startingConversation = false;
-  private readonly driver: FreebuffDriver;
+  private readonly driver: DriverLike;
   // The options the Driver runs with; `configDir` locates the Screen-dump record.
   private readonly driverOptions: DriverOptions;
   private readonly taskTimeoutMs: number;
@@ -112,13 +116,13 @@ export class Supervisor {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.workspace = workspaceDirFor(this.pipeName);
     this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
-    this.freezeMs = config.freezeThresholdMs ?? FREEZE_THRESHOLD_MS;
+    this.freezeMs = FREEZE_THRESHOLD_MS;
     this.errorLogPath = config.errorLogPath ?? ERROR_LOG_PATH;
     this.driverOptions = {
-      ...(config.driver ?? defaultDriverOptions()),
+      ...(config.driverOptions ?? defaultDriverOptions()),
       keepAlive: true,
     };
-    this.driver = new FreebuffDriver(this.driverOptions);
+    this.driver = config.driver ?? new FreebuffDriver(this.driverOptions);
   }
 
   async listen(): Promise<Server> {
@@ -515,8 +519,7 @@ const formatDuration = (ms: number): string => {
 
 if (isMainModule(import.meta.url)) {
   const main = async (): Promise<void> => {
-    const { pipeName, driver, taskTimeoutMs } = mainOptions();
-    const freezeThresholdMs = Number(process.env.FREEBUFF_FREEZE_THRESHOLD_MS) || FREEZE_THRESHOLD_MS;
+    const { pipeName, driverOptions, taskTimeoutMs } = mainOptions();
     const errorLogPath = process.env.FREEBUFF_ERROR_LOG || ERROR_LOG_PATH;
     // Windows lets several servers share one named pipe, so reachability alone
     // cannot detect a duplicate; the pid lock makes a second supervisor exit. A start
@@ -528,7 +531,7 @@ if (isMainModule(import.meta.url)) {
     // takeover start must not — the stale daemon's socket is still draining, so the
     // reachability probe would misread this start as the duplicate.
     if (!lock.replaced && (await pipeReachable(pipeName, PIPE_PROBE_TIMEOUT_MS))) process.exit(0);
-    const supervisor = new Supervisor({ pipeName, driver, taskTimeoutMs, freezeThresholdMs, errorLogPath });
+    const supervisor = new Supervisor({ pipeName, driverOptions, taskTimeoutMs, errorLogPath });
     try {
       await supervisor.listen();
     } catch (error) {
