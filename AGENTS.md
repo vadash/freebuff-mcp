@@ -14,7 +14,8 @@ MCP client (harness)
 src/server.ts        MCP server: stateless proxy; starts the Supervisor on demand
    │ named pipe \\.\pipe\freebuff-supervisor   (src/ipc.ts)
    ▼
-src/supervisor.ts    Supervisor: Queue, Watchdog, state machine, status flags
+src/supervisor.ts    Supervisor: Queue, state machine, status flags, respawn policy
+   │                   src/turnRunner.ts      TurnRunner: one Task's Turn — submit, Watchdog, verdict
    │                   src/supervisorLock.ts  one Supervisor per pipe name
    │                   src/workspace.ts       Workspace dir, Junction, prompt preamble
    ▼

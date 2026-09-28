@@ -89,7 +89,11 @@ code replaces the holder (ADR-0005).
   Supervisor sends it before every Task. The `new_session` tool sends `/new` to the
   running Instance, which is never killed for it. _Avoid:_ "session" (for the context).
 - **Turn**: the model's run on one Task, from submit to Turn end. The prompt
-  goes in as one bracketed paste and is submitted once.
+goes in as one bracketed paste and is submitted once.
+- **TurnRunner**: the module that runs one Task's Turn: submits the prompt (the
+  fixed preamble; over 64 KB as a file referral), owns the Watchdog for the
+  Turn's duration, and classifies the outcome: Answer, deadline, frozen,
+  crashed, cancelled, no Answer. Respawn policy stays with the Supervisor.
 - **Ack**: the Chat store line proving freebuff received the prompt. One retry
   if it is missing.
 - **Turn end**: the `Main prompt finished` line in the Chat store after the

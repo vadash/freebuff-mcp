@@ -1,11 +1,10 @@
-import { appendFileSync, mkdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
-import { basename, dirname, join, resolve } from 'node:path';
-import { ERROR_LOG_PATH, ERROR_LOG_POLL_MS, FAILURE_SCREEN_LINES, FREEZE_POLL_MAX_MS, FREEZE_POLL_MIN_MS, FREEZE_THRESHOLD_MS, PASTE_THRESHOLD_BYTES, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
+import { resolve } from 'node:path';
+import { ERROR_LOG_PATH, FREEZE_THRESHOLD_MS, PIPE_CONNECT_TIMEOUT_MS, PIPE_PROBE_TIMEOUT_MS, QUEUE_DEPTH, SHUTDOWN_EXIT_MS, STARTUP_PIPE_WAIT_MS, SUPERVISOR_PIPE, TASK_TIMEOUT_MS } from './config.ts';
 import { FreebuffDriver, defaultDriverOptions } from './driver.ts';
 import type { DriverLike, DriverOptions } from './driver.ts';
-import { FreebuffDriverError } from './driver.ts';
-import { classifyScreen, errorLines, freezeKey, screenExcerpt, type ScreenAssessment } from './protocol/screen.ts';
+import { classifyScreen, type ScreenAssessment } from './protocol/screen.ts';
 import { recognizeScreen, type Recognition } from './protocol/signatures.ts';
 import { corpusVersions } from './protocol/corpus.ts';
 import { hasScreenDump, metadataVersion } from './protocol/screenDump.ts';
@@ -13,7 +12,8 @@ import { pipeReachable, waitForPipe } from './ipc.ts';
 import { errorMessage } from './util.ts';
 import { isMainModule, mainOptions } from './entry.ts';
 import { acquireSupervisorLock, supervisorFingerprint } from './supervisorLock.ts';
-import { PROMPT_PREAMBLE, assertSafeTarget, ensureJunction, workspaceDirFor } from './workspace.ts';
+import { assertSafeTarget, ensureJunction, workspaceDirFor } from './workspace.ts';
+import { TurnRunner, type TurnRunnerLike } from './turnRunner.ts';
 
 export type SupervisorState = 'stopped' | 'spawning' | 'idle' | 'ready' | 'busy';
 
@@ -25,6 +25,9 @@ export interface SupervisorConfig {
   driverOptions?: DriverOptions;
   // C4 seam: an injected Driver for in-process policy tests; production leaves it unset.
   driver?: DriverLike;
+  // The Turn seam: an injected runner resolves canned verdicts with no timers in
+  // policy tests; production leaves it unset and gets the real TurnRunner.
+  turnRunner?: TurnRunnerLike;
   taskTimeoutMs?: number;
   errorLogPath?: string;
 }
@@ -76,22 +79,9 @@ export type SupervisorResponse =
 
 interface QueuedTask {
   prompt: string;
-  cancelled?: boolean;
   // Answered while the Watchdog respawns the Instance behind it; no longer cancellable.
   answered?: boolean;
   reply: (response: SupervisorResponse) => void;
-}
-
-type WatchdogReason = 'frozen' | 'crashed' | 'deadline';
-
-// The Watchdog's verdict on a Task, with the last Screen lines for the caller.
-class WatchdogFailure extends Error {
-  readonly reason: WatchdogReason;
-  constructor(reason: WatchdogReason, detail: string, screen: string) {
-    super(`watchdog failure: ${reason}: ${detail}\nlast screen lines:\n${screen}`);
-    this.name = 'WatchdogFailure';
-    this.reason = reason;
-  }
 }
 
 export class Supervisor {
@@ -106,23 +96,26 @@ export class Supervisor {
   private readonly driver: DriverLike;
   // The options the Driver runs with; `configDir` locates the Screen-dump record.
   private readonly driverOptions: DriverOptions;
-  private readonly taskTimeoutMs: number;
-  private readonly freezeMs: number;
-  private readonly errorLogPath: string;
+  // Runs the Task's Turn: submit, Watchdog, verdict. The Supervisor keeps the Queue,
+  // the replies and the respawn policy.
+  private readonly runner: TurnRunnerLike;
   private readonly pipeName: string;
-  private tempCounter = 0;
 
   constructor(config: SupervisorConfig = {}) {
     this.pipeName = config.pipeName ?? SUPERVISOR_PIPE;
     this.workspace = workspaceDirFor(this.pipeName);
-    this.taskTimeoutMs = config.taskTimeoutMs ?? TASK_TIMEOUT_MS;
-    this.freezeMs = FREEZE_THRESHOLD_MS;
-    this.errorLogPath = config.errorLogPath ?? ERROR_LOG_PATH;
     this.driverOptions = {
       ...(config.driverOptions ?? defaultDriverOptions()),
       keepAlive: true,
     };
     this.driver = config.driver ?? new FreebuffDriver(this.driverOptions);
+    this.runner = config.turnRunner ?? new TurnRunner({
+      driver: this.driver,
+      workspace: this.workspace,
+      taskTimeoutMs: config.taskTimeoutMs ?? TASK_TIMEOUT_MS,
+      freezeMs: FREEZE_THRESHOLD_MS,
+      errorLogPath: config.errorLogPath ?? ERROR_LOG_PATH,
+    });
   }
 
   async listen(): Promise<Server> {
@@ -213,8 +206,7 @@ export class Supervisor {
       reply({ ok: false, kind: 'error', error: 'cancel_task failed: no task is active' });
       return;
     }
-    task.cancelled = true;
-    await this.driver.cancelActive();
+    await this.runner.stop();
     reply({ ok: true, kind: 'ok' });
   }
 
@@ -324,103 +316,6 @@ export class Supervisor {
     void this.runOne(task);
   }
 
-  // Issue #16: one attempt per Task. A freeze, a crash or the deadline fails it and the
-  // prompt is never resubmitted: a half-run coding task is not idempotent.
-  private async supervised(task: QueuedTask, prompt: string): Promise<string> {
-    const work = this.driver.runTask(this.workspace, prompt);
-    work.catch(() => {});
-    const { promise: tripped, reject: trip } = Promise.withResolvers<never>();
-    const deadline = setTimeout(
-      () => trip(this.watchdogFailure('deadline', `still running at its ${formatDuration(this.taskTimeoutMs)} deadline`)),
-      this.taskTimeoutMs,
-    );
-    const freeze = this.watchFreeze(task, () =>
-      trip(this.watchdogFailure('frozen', `no Screen or Chat store change for ${formatDuration(this.freezeMs)}`)),
-    );
-    const errors = this.watchErrors();
-    try {
-      return await Promise.race([work, tripped]);
-    } catch (error) {
-      if (error instanceof FreebuffDriverError && error.reason === 'process_exited' && !task.cancelled) {
-        throw this.watchdogFailure('crashed', 'freebuff exited mid-task');
-      }
-      throw error;
-    } finally {
-      clearTimeout(deadline);
-      freeze.stop();
-      errors.stop();
-    }
-  }
-
-  // Issue #17: Screen lines carrying a known error Marker during a Turn are appended to
-  // the error log for later analysis; nothing acts on them. A line counts once it shows
-  // more often than when the Turn started (earlier Turns' copies stay on the Screen), and
-  // is logged once per Turn.
-  private watchErrors(): { stop: () => void } {
-    const workspace = this.workspace;
-    const tally = (): Map<string, number> => {
-      const counts = new Map<string, number>();
-      for (const line of errorLines(this.driver.screenText())) counts.set(line, (counts.get(line) ?? 0) + 1);
-      return counts;
-    };
-    // A dead Instance's last Screen is not what the respawned one will show.
-    const baseline = this.driver.isAlive() ? tally() : new Map<string, number>();
-    const logged = new Set<string>();
-    const scan = (): void => {
-      const lines = [...tally()]
-        .filter(([line, count]) => count > (baseline.get(line) ?? 0) && !logged.has(line))
-        .map(([line]) => line);
-      if (lines.length === 0) return;
-      for (const line of lines) logged.add(line);
-      try {
-        mkdirSync(dirname(this.errorLogPath), { recursive: true });
-        appendFileSync(this.errorLogPath, JSON.stringify({ time: new Date().toISOString(), workspace, lines }) + '\n');
-      } catch {
-        // The log is best-effort; it never fails a Task.
-      }
-    };
-    const timer = setInterval(scan, ERROR_LOG_POLL_MS);
-    // A final scan catches lines printed just before the Turn ended.
-    return {
-      stop: () => {
-        clearInterval(timer);
-        scan();
-      },
-    };
-  }
-
-  private watchdogFailure(reason: WatchdogReason, detail: string): WatchdogFailure {
-    return new WatchdogFailure(reason, detail, screenExcerpt(this.driver.screenText(), FAILURE_SCREEN_LINES));
-  }
-
-  // Frozen: neither the Screen (minus the Countdown and Freebucks lines) nor the Chat
-  // store changed for the freeze threshold.
-  private watchFreeze(task: QueuedTask, onFrozen: () => void): { stop: () => void } {
-    const dir = this.workspace;
-    let lastLog = this.driver.newestLogSize(dir);
-    let lastScreen = freezeKey(this.driver.screenText());
-    let lastChange = Date.now();
-    const timer = setInterval(() => {
-      if (this.active !== task || task.cancelled) {
-        clearInterval(timer);
-        return;
-      }
-      const log = this.driver.newestLogSize(dir);
-      const screen = freezeKey(this.driver.screenText());
-      if (log !== lastLog || screen !== lastScreen) {
-        lastLog = log;
-        lastScreen = screen;
-        lastChange = Date.now();
-        return;
-      }
-      if (Date.now() - lastChange >= this.freezeMs) {
-        clearInterval(timer);
-        onFrozen();
-      }
-    }, Math.min(FREEZE_POLL_MAX_MS, Math.max(FREEZE_POLL_MIN_MS, Math.floor(this.freezeMs / 4))));
-    return { stop: () => clearInterval(timer) };
-  }
-
   // A fresh Instance in the workspace, idle on the Welcome screen or ready (an
   // unexpired Hour session resumes). A failed respawn leaves the supervisor stopped;
   // the next Task spawns.
@@ -436,40 +331,40 @@ export class Supervisor {
     }
   }
 
+  // One attempt per Task (issue #16): the runner's verdict maps onto the reply and the
+  // Instance policy. Watchdog failures reply first — the caller is freed while the
+  // Instance respawns behind it. A Turn that throws without a verdict (e.g. the temp
+  // file cannot be written) replies and kills, like any other Driver error: runOne is
+  // total — every Task gets exactly one reply, or the wire request would hang.
   private async runOne(task: QueuedTask): Promise<void> {
-    let tempFile: string | null = null;
     try {
-      let prompt = task.prompt;
-      if (Buffer.byteLength(prompt, 'utf8') > PASTE_THRESHOLD_BYTES) {
-        tempFile = join(this.workspace, `.freebuff-task-${++this.tempCounter}.md`);
-        writeFileSync(tempFile, prompt);
-        prompt = `Read the instructions in ${basename(tempFile)} in the current directory and follow them.`;
-      }
-      // The Instance's cwd is the workspace, never the caller's repo.
-      const answer = await this.supervised(task, `${PROMPT_PREAMBLE}\n${prompt}`);
-      this.spawning = false;
-      task.reply({ ok: true, kind: 'answer', answer });
-    } catch (error) {
-      if (!task.cancelled && error instanceof WatchdogFailure) {
-        // Reply first: the caller is freed while the Instance respawns behind it.
+      const outcome = await this.runner.run(task.prompt);
+      if (outcome.ok) {
+        this.spawning = false;
+        task.reply({ ok: true, kind: 'answer', answer: outcome.answer });
+      } else if (outcome.reason === 'deadline' || outcome.reason === 'frozen' || outcome.reason === 'crashed') {
         task.answered = true;
-        task.reply({ ok: false, kind: 'error', error: error.message });
+        task.reply({ ok: false, kind: 'error', error: outcome.message });
         await this.respawn();
-      } else if (!task.cancelled && error instanceof FreebuffDriverError && error.reason === 'no_answer') {
+      } else if (outcome.reason === 'no_answer') {
         // The Turn ended; the Instance is idle and stays up for the next Task.
         this.spawning = false;
-        task.reply({ ok: false, kind: 'error', error: error.message });
+        task.reply({ ok: false, kind: 'error', error: outcome.message });
       } else {
+        // A cancelled Task or a Driver error: kill; the next Task spawns on demand.
         this.driver.kill();
         this.spawning = false;
-        task.reply(
-          task.cancelled
-            ? { ok: false, kind: 'error', error: 'task cancelled' }
-            : { ok: false, kind: 'error', error: errorMessage(error) },
-        );
+        task.reply({
+          ok: false,
+          kind: 'error',
+          error: outcome.reason === 'cancelled' ? 'task cancelled' : outcome.message,
+        });
       }
+    } catch (error) {
+      this.driver.kill();
+      this.spawning = false;
+      task.reply({ ok: false, kind: 'error', error: errorMessage(error) });
     } finally {
-      if (tempFile !== null) rmSync(tempFile, { force: true });
       this.active = null;
       this.pump();
     }
@@ -510,12 +405,6 @@ export class Supervisor {
     if (!socket.destroyed) socket.write(JSON.stringify(response) + '\n');
   }
 }
-
-const formatDuration = (ms: number): string => {
-  if (ms % 60_000 !== 0) return `${ms / 1000}s`;
-  const minutes = ms / 60_000;
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-};
 
 if (isMainModule(import.meta.url)) {
   const main = async (): Promise<void> => {

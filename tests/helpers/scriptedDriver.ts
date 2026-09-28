@@ -42,6 +42,8 @@ export class ScriptedDriver implements DriverLike {
   private awaitIdleFailure: FreebuffDriverError | null = null;
   private holdConversations = false;
   private conversationRelease: (() => void) | null = null;
+  private holdStops = false;
+  private stopRelease: (() => void) | null = null;
 
   // -- test-side controls --------------------------------------------------
 
@@ -80,6 +82,16 @@ export class ScriptedDriver implements DriverLike {
     this.conversationRelease = null;
   }
 
+  /** Makes `stop` wait for `releaseStop`, so a test can pin reply-before-respawn. */
+  holdStop(): void {
+    this.holdStops = true;
+  }
+
+  releaseStop(): void {
+    this.stopRelease?.();
+    this.stopRelease = null;
+  }
+
   // -- DriverLike -----------------------------------------------------------
 
   isAlive(): boolean {
@@ -114,6 +126,11 @@ export class ScriptedDriver implements DriverLike {
   async stop(_timeoutMs?: number): Promise<void> {
     this.calls.stop++;
     this.alive = false;
+    if (!this.holdStops) return;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.stopRelease = resolve;
+    await promise;
+    this.holdStops = false;
   }
 
   async cancelActive(): Promise<void> {

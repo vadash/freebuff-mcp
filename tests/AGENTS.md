@@ -10,9 +10,12 @@ Vitest picks up every `*.test.ts` / `*.test.mjs` here. Four tiers:
   [fixtures/screen/AGENTS.md](fixtures/screen/AGENTS.md) before changing a
   fixture, Marker or signature.
 - **Supervisor policy**: `supervisor-policy.test.ts` drives the real
-  Supervisor in-process on fake timers through `helpers/scriptedDriver.ts`, a
-  `DriverLike` test adapter (the C4 seam). Freeze, deadline, crash, respawn,
-  queue and purge policies run on virtual time here — no processes.
+  Supervisor in-process through `helpers/scriptedDriver.ts`, a `DriverLike`
+  test adapter (the C4 seam), and `helpers/scriptedTurnRunner.ts`, a
+  `TurnRunnerLike` adapter that dishes canned verdicts. Queue, purge, cancel,
+  respawn and reply-ordering policies run with no timers and no processes.
+  The Watchdog itself — freeze, deadline, crash, error log — is tested at the
+  Turn seam in `turnRunner.test.ts`, on `helpers/virtualClock.ts`.
 - **Stub e2e**: `driver`, `server`, and the `supervisor` daemon smoke run the
   real processes against `stub-freebuff.mjs`, a protocol-faithful fake of the
   freebuff TUI. `helpers/harness.ts` starts a Supervisor or MCP server on a
