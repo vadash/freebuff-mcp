@@ -130,7 +130,14 @@ code replaces the holder (ADR-0005).
 - **Drift**: a CLI update changing a known screen so that some of its Markers
   no longer match. Detected, not prevented; a recapture follows a drift
   signal, never a version bump alone.
-- **Fallback Enter**: while the Instance starts, a Screen that stays
+- **Settle loop**: the Driver's wait, at spawn and before each Task, for a settled
+  Screen: `ready`, or `idle` at the Welcome screen or Continue screen. While it
+  waits it names each Screen through the one recognition table, saves unknown and
+  degraded Screens as Screen dumps, answers the Session-in-use dialog through the
+  one Enter throttle shared with the Fallback Enter, and presses the Continue
+  screen once per Task arrival. Its deadline fails the Task with `ready_timeout`.
+  _Avoid:_ "settle check", "ready wait".
+- **Fallback Enter**: in the Settle loop, a Screen that stays
   unrecognized for ~10 s gets one Enter, then another every ~10 s until a
   recognized screen shows. Accepted cost: a stray Enter on an unrecognized
   screen lands in the input box and submits nothing.

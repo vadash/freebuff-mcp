@@ -4,7 +4,7 @@ Vitest picks up every `*.test.ts` / `*.test.mjs` here. Three tiers:
 
 - **Pure**: modules tested through their exported functions, no processes:
   `screen`, `chatStore`, `workspace`, `supervisor-lock`, `doctor`, `capture`,
-  `streak-keeper` (its pure helpers only).
+  `settle`, `streak-keeper` (its pure helpers only).
 - **Corpus**: `corpus.test.ts` replays every Screen fixture through the
   emulator and signature table. See
   [fixtures/screen/AGENTS.md](fixtures/screen/AGENTS.md) before changing a

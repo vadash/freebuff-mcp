@@ -7,12 +7,13 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS, UNKNOWN_SCREEN_FALLBACK_MS, UNSOLICITED_ENTER_MS } from './config.ts';
+import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
 import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
 import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOG_FILENAME, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 import { writeScreenDump } from './protocol/screenDump.ts';
+import { awaitSettled, type SettleIo } from './settle.ts';
 import { sleep } from './util.ts';
 
 export type DriverFailureReason = 'ready_timeout' | 'dir_mismatch' | 'ack_missing' | 'process_exited' | 'needs_login' | 'no_answer';
@@ -171,13 +172,7 @@ export class FreebuffDriver {
 
   async awaitIdle(dir: string): Promise<'idle' | 'ready'> {
     const instance = await this.acquire(dir);
-    return await this.waitSettled(
-      instance,
-      () => {
-        if (instance.exited) throw new FreebuffDriverError('process_exited');
-      },
-      true,
-    );
+    return await this.waitSettled(instance, true);
   }
 
   private chatsRoot(dir: string): string {
@@ -197,7 +192,7 @@ export class FreebuffDriver {
       if (instance.exited) throw new FreebuffDriverError('process_exited');
     };
     try {
-      await this.waitSettled(instance, assertAlive, false);
+      await this.waitSettled(instance, false);
       const baseline = turnBaseline(this.snapshot(chatsRoot));
       if (this.options.keepAlive) await this.startConversation(pty);
       await this.pastePrompt(pty, prompt);
@@ -291,85 +286,30 @@ export class FreebuffDriver {
     });
   }
 
-  private async waitSettled(instance: LiveInstance, assertAlive: () => void, idle: boolean): Promise<'idle' | 'ready'> {
-    const { pty, screen, dir } = instance;
-    const deadline = Date.now() + this.readyMs;
-    let lastEnterAt = 0;
-    let continuePressed = false;
-    // Issue #23: start of the current stretch of continuously unrecognized Screen.
-    let unknownSince: number | null = null;
-    // One throttle for every unsolicited Enter: the Session-in-use dialog's re-entries
-    // and the Fallback Enter.
-    const unsolicitedEnter = async (press: () => void | Promise<void>): Promise<boolean> => {
-      const now = Date.now();
-      if (now - lastEnterAt <= UNSOLICITED_ENTER_MS) return false;
-      await press();
-      lastEnterAt = Date.now();
-      return true;
+  // The PTY-backed adapter at the settle seam: the loop's only effects on the Instance.
+  private settleIo(instance: LiveInstance): SettleIo {
+    return {
+      read: () => instance.screen.text(),
+      press: () => instance.pty.write('\r'),
+      sleep,
+      now: () => Date.now(),
+      dump: (text) => writeScreenDump(this.options.configDir, text),
+      alive: () => !instance.exited,
     };
-    while (Date.now() < deadline) {
-      assertAlive();
-      const text = screen.text();
-      // One screen oracle: one classifyScreen per frame names the screen (tolerant
-      // recognition) and parses it (strict); nothing here matches raw literals, so
-      // Drift on any screen degrades through the same table doctor reads.
-      const { recognition, verdict } = classifyScreen(text, dir);
-      // Issue #31: degraded frames are dumped like unknown ones — dialog frames too,
-      // the Freeze-key dedupe bounds its repaints — into the same per-version folder,
-      // so normal use collects the specimens the corpus needs. The dump is the drift
-      // record `status` reads.
-      if (recognition.screen === null || recognition.level === 'degraded') {
-        writeScreenDump(this.options.configDir, text);
-      }
-      if (recognition.screen === 'login gate') {
-        this.loginRequired = true;
-        throw new FreebuffDriverError('needs_login');
-      }
-      if (recognition.screen === 'Session-in-use dialog') {
-        // The Session-in-use dialog clears on ENTER, and any dialog frame is a
-        // recognized screen: seeing it stops any running unknown-screen fallback.
-        unknownSince = null;
-        await unsolicitedEnter(() => pty.write('\r'));
-        await sleep(POLL_MS);
-        continue;
-      }
-      if (recognition.screen === null) {
-        // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
-        // and let the loop re-evaluate; any recognized screen restarts the wait.
-        const now = Date.now();
-        if (unknownSince === null) unknownSince = now;
-        if (now - unknownSince >= UNKNOWN_SCREEN_FALLBACK_MS && (await unsolicitedEnter(() => pty.write('\r')))) unknownSince = now;
-      } else if (recognition.screen !== 'blank') {
-        // The blank-frame paint-transition rule lives inside recognizeScreen.
-        unknownSince = null;
-      }
-      if (recognition.screen === 'ready') {
-        if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
-        this.loginRequired = false;
-        return 'ready';
-      }
-      if (recognition.screen === 'Continue' && !continuePressed) {
-        if (idle) {
-          // ADR-0001 #3: the Continue screen counts as idle; the supervisor presses it
-          // only when a task arrives.
-          this.loginRequired = false;
-          return 'idle';
-        }
-        // Issue #12: the Continue screen clears on one ENTER per task arrival; an idle
-        // Instance at the Continue screen must not be touched.
-        continuePressed = true;
-        pty.write('\r');
-        await sleep(POLL_MS);
-      } else if (recognition.screen === 'Welcome screen') {
-        // ADR-0004: the input box on the Welcome screen accepts a prompt directly —
-        // the first message starts the Hour session.
-        if (verdict.banner === null) throw new FreebuffDriverError('dir_mismatch');
-        this.loginRequired = false;
-        return 'idle';
-      }
-      await sleep(POLL_MS);
+  }
+
+  private async waitSettled(instance: LiveInstance, idle: boolean): Promise<'idle' | 'ready'> {
+    const outcome = await awaitSettled(this.settleIo(instance), {
+      readyMs: this.readyMs,
+      idle,
+      expectedDir: instance.dir,
+    });
+    if ('error' in outcome) {
+      if (outcome.error === 'needs_login') this.loginRequired = true;
+      throw new FreebuffDriverError(outcome.error, outcome.excerpt);
     }
-    throw new FreebuffDriverError('ready_timeout', screen.text().replace(/\n{2,}/g, '\n').slice(0, 2000));
+    this.loginRequired = false;
+    return outcome.ok;
   }
 
   // /new has no log-line echo, so wait for the TUI to swallow it before typing on.

@@ -8,8 +8,8 @@ export const ACK_TIMEOUT_MS = 20_000;
 export const PASTE_THRESHOLD_BYTES = 64 * 1024;
 export const STOP_GRACE_MS = 2_000;
 export const STOP_TIMEOUT_MS = 5_000;
-// Minimum spacing between unsolicited Enters; the one shared throttle lives in
-// Driver.waitSettled.
+// Minimum spacing between unsolicited Enters; the one shared throttle lives in the
+// settle loop (src/settle.ts).
 export const UNSOLICITED_ENTER_MS = 3_000;
 // Issue #23: Enter fallback after this much continuously unrecognized Screen.
 export const UNKNOWN_SCREEN_FALLBACK_MS = 10_000;
