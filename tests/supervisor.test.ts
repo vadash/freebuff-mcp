@@ -5,6 +5,7 @@ import { basename, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { requestPipe, sendRawLine, waitForPipe } from '../src/ipc.ts';
 import { READY_PROMPT } from '../src/protocol/markers.ts';
+import { newestChatDir, readChats } from '../src/protocol/chatStore.ts';
 import { sleep } from '../src/util.ts';
 import { Supervisor, type SupervisorResponse } from '../src/supervisor.ts';
 import { PROMPT_PREAMBLE, workspaceDirFor } from '../src/workspace.ts';
@@ -26,23 +27,15 @@ const textsOf = (event: 'paste' | 'submit'): string[] =>
     .filter((entry): entry is Extract<StubInput, { text: string }> => entry.event === event)
     .map((entry) => entry.text);
 
-const chatsRoot = (): string => join(dirs.configDir, 'projects', basename(workspaceDirFor(pipeName)), 'chats');
-
 const latestFirstMsg = (): string => {
-  const root = chatsRoot();
-  let newest = { mtimeMs: 0, msg: '' };
-  for (const dir of readdirSync(root)) {
-    const logPath = join(root, dir, 'log.jsonl');
-    const stat = statSync(logPath);
-    if (stat.mtimeMs < newest.mtimeMs) continue;
-    const parsed: unknown = JSON.parse(readFileSync(logPath, 'utf8').split('\n')[0] ?? '{}');
-    const msg =
-      parsed !== null && typeof parsed === 'object' && 'msg' in parsed && typeof parsed.msg === 'string'
-        ? parsed.msg
-        : '';
-    newest = { mtimeMs: stat.mtimeMs, msg };
-  }
-  return newest.msg;
+  const newest = newestChatDir(readChats(dirs.configDir, workspaceDirFor(pipeName)));
+  if (!newest) return '';
+  const parsed: unknown = JSON.parse(newest.logText.split('\n')[0] ?? '{}');
+  const msg =
+    parsed !== null && typeof parsed === 'object' && 'msg' in parsed && typeof parsed.msg === 'string'
+      ? parsed.msg
+      : '';
+  return msg;
 };
 
 describe('supervisor daemon (named-pipe protocol)', () => {
@@ -359,15 +352,17 @@ describe('supervisor daemon (named-pipe protocol)', () => {
   }, 30_000);
 
   it('reports busy with a queue position once the queue is full and drains in FIFO order', async () => {
-    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 1200, ...dirs });
+    proc = startSupervisor({ pipeName, mode: 'slow', delayMs: 1200, ...dirs, stubEnv: { FREEBUFF_STUB_INPUT_LOG: inputLogPath() } });
     await waitForPipe(pipeName, 10_000);
-    const answers: string[] = [];
+    const answers: Record<string, string> = {};
     const tasks = ['p1', 'p2', 'p3', 'p4', 'p5'].map((prompt) =>
       requestPipe<{ ok: boolean; answer?: string }>(
         pipeName,
         { op: 'run_prompt', dir: dirs.taskDir, prompt },
         30_000,
-      ).then((r) => answers.push(r.answer ?? '')),
+      ).then((r) => {
+        answers[prompt] = r.answer ?? '';
+      }),
     );
     await pollStatus(pipeName, { queueDepth: 4 });
     const overflow = await requestPipe<{ ok: boolean; position?: number }>(
@@ -378,7 +373,14 @@ describe('supervisor daemon (named-pipe protocol)', () => {
     expect(overflow.position).toBe(5);
     await Promise.all(tasks);
     const submitted = (prompt: string): string => `stub(DeepSeek V4.1 Flash): ${PROMPT_PREAMBLE}\n${prompt}`;
-    expect(answers).toEqual([submitted('p1'), submitted('p2'), submitted('p3'), submitted('p4'), submitted('p5')]);
+    // Each connection gets the answer to its own request, and the five tasks ran
+    // serially, one paste per prompt. The reply arrival order across independent
+    // sockets is the transport's, not the Queue's, so FIFO is pinned order-free.
+    for (const prompt of ['p1', 'p2', 'p3', 'p4', 'p5']) {
+      expect(answers[prompt], prompt).toBe(submitted(prompt));
+    }
+    const pasted = (prompt: string): string => `${PROMPT_PREAMBLE}\n${prompt}`;
+    expect(textsOf('paste').sort()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'].map(pasted).sort());
   }, 30_000);
 
   it('routes prompts above the paste threshold through a temp file and keeps small prompts on the paste path', async () => {
@@ -527,11 +529,11 @@ describe('supervisor daemon (named-pipe protocol)', () => {
 
   // Issue #16: the Watchdog fails a stuck Task without resubmitting it, respawns the
   // Instance, and the next queued Task runs normally.
-  const promptCount = (prompt: string): number => {
-    const root = chatsRoot();
-    const logs = readdirSync(root).map((dir) => readFileSync(join(root, dir, 'log.jsonl'), 'utf8'));
-    return logs.join('\n').split(JSON.stringify({ msg: `${PROMPT_PREAMBLE}\n${prompt}` })).length - 1;
-  };
+  const promptCount = (prompt: string): number =>
+    readChats(dirs.configDir, workspaceDirFor(pipeName))
+      .map((snap) => snap.logText)
+      .join('\n')
+      .split(JSON.stringify({ msg: `${PROMPT_PREAMBLE}\n${prompt}` })).length - 1;
 
   const failFirstThenRunNext = async (
     prompt: string,

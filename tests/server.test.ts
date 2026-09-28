@@ -1,10 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { requestPipe, waitForPipe } from '../src/ipc.ts';
 import { READY_PROMPT } from '../src/protocol/markers.ts';
+import { readChats } from '../src/protocol/chatStore.ts';
 import { workspaceDirFor, PROMPT_PREAMBLE } from '../src/workspace.ts';
 import { consoleProcessList, expectExit, makeDirs, plainEnv, pollStatus, serverEntry, startSupervisor, uniquePipe, type HarnessDirs, type HarnessOptions, type SupervisorProcess } from './helpers/harness.ts';
 import { sleep } from '../src/util.ts';
@@ -33,9 +34,6 @@ const toolText = (result: CallResult): string => {
   expect(result.isError).toBeFalsy();
   return result.content[0]!.text ?? '';
 };
-
-const chatsRoot = (configDir: string): string =>
-  join(configDir, 'projects', basename(workspaceDirFor(pipeName)), 'chats');
 
 describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
   beforeEach(() => {
@@ -76,7 +74,7 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
     // The 0.1.0 session screen keeps the account box, so the daily allowance is on
     // screen at ready (ADR-0004; the old picker-only balance read null here).
     expect(toolStatus.freebucksDaily).toBe(25);
-    const chatDirs = readdirSync(chatsRoot(dirs.configDir));
+    const chatDirs = readChats(dirs.configDir, workspaceDirFor(pipeName)).map((snap) => snap.dirName);
     expect(chatDirs.length).toBeGreaterThanOrEqual(2);
     for (const dir of chatDirs) expect(dir.startsWith('chat-new-')).toBe(true);
   }, 30_000);
@@ -200,9 +198,15 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
       await c.connect(transport!);
       const deadline = Date.now() + 15_000;
       for (;;) {
-        const status = JSON.parse(toolText((await c.callTool({ name: 'status', arguments: {} })) as CallResult)) as Record<string, unknown>;
-        if (status.fingerprint === 'new-code') break;
-        if (Date.now() > deadline) throw new Error(`status still served by the old daemon: ${JSON.stringify(status)}`);
+        // ADR-0005: a call racing the takeover can fail visibly — the old daemon's
+        // pipe is already gone. Only the settled state is the contract.
+        const result = (await c.callTool({ name: 'status', arguments: {} })) as CallResult;
+        let fingerprint: unknown = null;
+        if (!result.isError) {
+          fingerprint = (JSON.parse(result.content[0]!.text ?? '') as Record<string, unknown>).fingerprint;
+        }
+        if (fingerprint === 'new-code') break;
+        if (Date.now() > deadline) throw new Error(`status still served by the old daemon after 15 s (last error: ${result.isError})`);
         await sleep(300);
       }
       await expectExit(supervisorProc, 10_000);

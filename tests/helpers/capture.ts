@@ -3,16 +3,14 @@
 // screen as a fixture. A fixture is the flattened visible screen (trailing row padding
 // trimmed) behind the same clear+home prefix the driver's full repaints use, so
 // flattenScreen([fixture]) reproduces the screen and the stub can replay it verbatim.
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, type IPty } from 'node-pty';
 import { SCREEN_COLS, SCREEN_ROWS } from '../../src/config.ts';
 import { sleep } from '../../src/util.ts';
-import { CHATS_DIRNAME, LOG_FILENAME, METADATA_FILENAME, PROJECTS_DIRNAME } from '../../src/protocol/markers.ts';
-import { projectKey, type ChatDirSnapshot } from '../../src/protocol/chatStore.ts';
+import { METADATA_FILENAME } from '../../src/protocol/markers.ts';
 import { CliTerminalScreen } from '../../src/protocol/screen.ts';
 import { recognizeScreen } from '../../src/protocol/signatures.ts';
 import { metadataVersion } from '../../src/protocol/screenDump.ts';
@@ -167,25 +165,3 @@ export class RealCli {
     this.pty.kill();
   }
 }
-
-/** Chats root of the real CLI (launcher-installed 0.0.193: ~/.config/manicode/projects/<basename>/chats). */
-export const realChatsRoot = (cwd: string): string =>
-  join(homedir(), '.config', 'manicode', PROJECTS_DIRNAME, projectKey(cwd), CHATS_DIRNAME);
-
-export const snapshotChats = (root: string): ChatDirSnapshot[] => {
-  let names: string[];
-  try {
-    names = readdirSync(root);
-  } catch {
-    return [];
-  }
-  return names.flatMap((dirName) => {
-    const logPath = join(root, dirName, LOG_FILENAME);
-    try {
-      const log = statSync(logPath);
-      return [{ dirName, mtimeMs: log.mtimeMs, logBytes: log.size, logText: readFileSync(logPath, 'utf8') }];
-    } catch {
-      return [];
-    }
-  });
-};

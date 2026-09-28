@@ -28,10 +28,6 @@ export const FULL_RESPONSE_KEY = 'fullResponse';
 export const SHOULD_END_TURN_KEY = 'shouldEndTurn';
 export const MSG_KEY = 'msg';
 
-export const PROJECTS_DIRNAME = 'projects';
-export const CHATS_DIRNAME = 'chats';
-export const LOG_FILENAME = 'log.jsonl';
-
 // On-disk records the CLI and this supervisor share.
 export const INSTANCE_RECORD_FILENAME = 'freebuff-instance-owner.json';
 export const LOCK_FILENAME = 'freebuff.lock';

@@ -1,6 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import { detectTurnEnd, lineMentionsPrompt, newestChatDir, projectKey } from '../src/protocol/chatStore.ts';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
+import { detectTurnEnd, lineMentionsPrompt, newestChatDir, projectKey, readChats } from '../src/protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from '../src/protocol/chatStore.ts';
 
 const dir = new URL('./fixtures/chat/', import.meta.url);
@@ -132,5 +134,40 @@ describe('detectTurnEnd', () => {
       '{"msg":"Main prompt finished"}\n';
     const s = snap('chat-008', 1000, text, 0);
     expect(detectTurnEnd([s], baselineOf(s))).toEqual({ done: true, answer: 'Kept the answer.' });
+  });
+});
+
+describe('readChats', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chatstore-fs-'));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const configDir = join(root, 'config');
+  // The on-disk layout, written literally: <configDir>/projects/<key>/chats/<chat>/log.jsonl.
+  const store = (key: string): string => join(configDir, 'projects', key, 'chats');
+  const logSnap = (chats: string, dirName: string, log: string): ChatDirSnapshot =>
+    ({ dirName, mtimeMs: statSync(join(chats, dirName, 'log.jsonl')).mtimeMs, logBytes: bytes(log), logText: log });
+
+  it('reads a missing store as none', () => {
+    expect(readChats(configDir, 'C:/work/demo-app')).toEqual([]);
+  });
+
+  it('reads each chat dir with log mtime, size and text', () => {
+    const chats = store('logged');
+    const log = 'first line\nsecond line\n';
+    mkdirSync(join(chats, 'chat-1'), { recursive: true });
+    writeFileSync(join(chats, 'chat-1', 'log.jsonl'), log);
+    expect(readChats(configDir, 'C:/work/logged')).toEqual([logSnap(chats, 'chat-1', log)]);
+  });
+
+  // freebuff creates the chat dir before log.jsonl exists (the Turn-start race);
+  // the reader keeps the dir as a fallback entry instead of dropping it.
+  it('keeps a log-less chat dir as a dir-mtime entry', () => {
+    const chats = store('mixed');
+    mkdirSync(join(chats, 'chat-a'), { recursive: true });
+    writeFileSync(join(chats, 'chat-a', 'log.jsonl'), 'only line\n');
+    mkdirSync(join(chats, 'chat-b'), { recursive: true });
+    expect(readChats(configDir, 'C:/work/mixed')).toEqual([
+      logSnap(chats, 'chat-a', 'only line\n'),
+      { dirName: 'chat-b', mtimeMs: statSync(join(chats, 'chat-b')).mtimeMs, logBytes: 0, logText: '' },
+    ]);
   });
 });

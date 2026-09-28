@@ -1,10 +1,20 @@
-import { basename } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
 import { FULL_RESPONSE_KEY, MSG_KEY, SHOULD_END_TURN_KEY, TURN_END_MSG } from './markers.ts';
 
-// The CLI writes <configDir>/projects/<projectKey(cwd)>/chats/<timestamp>/log.jsonl
-// (configDir = ~/.config/manicode): an Ack line mentioning the prompt, then the Turn
-// end line carrying data.fullResponse. Re-verified on 0.0.199; `~/.freebuff` held
-// per-project state only for older builds.
+// freebuff's config dir: the chat store, the metadata file and the lock records live
+// under it. The Driver hands it to the CLI as FREEBUFF_CONFIG_DIR and the capture
+// harness reads the real store under it — one owner, so the spellings cannot drift.
+export const DEFAULT_CONFIG_DIR = join(homedir(), '.config', 'manicode');
+
+// The chat store's on-disk layout: <configDir>/projects/<projectKey(cwd)>/chats/
+// <timestamp>/log.jsonl. An Ack line mentioning the prompt, then the Turn end line
+// carrying data.fullResponse. Re-verified on 0.0.199; `~/.freebuff` held per-project
+// state only for older builds.
+const PROJECTS_DIRNAME = 'projects';
+const CHATS_DIRNAME = 'chats';
+const LOG_FILENAME = 'log.jsonl';
 
 // Issue #1: basename-key collisions are accepted; the real app keys chats by plain basename.
 export function projectKey(dir: string): string {
@@ -14,6 +24,39 @@ export function projectKey(dir: string): string {
 export type ChatDirSnapshot = { dirName: string; mtimeMs: number; logBytes: number; logText: string };
 export type TurnBaseline = { dirName: string; logBytes: number };
 export type TurnCompletion = { done: boolean; answer: string | null };
+
+const chatsRoot = (configDir: string, dir: string): string =>
+  join(configDir, PROJECTS_DIRNAME, projectKey(dir), CHATS_DIRNAME);
+
+// Reads every chat dir of the store: log mtime, size and text when log.jsonl exists;
+// a dir-mtime fallback entry (logBytes 0, empty text) for a chat dir whose log is not
+// written yet (the Turn-start race) or cannot be read (e.g. locked mid-write); a
+// missing store reads as none.
+export function readChats(configDir: string, dir: string): ChatDirSnapshot[] {
+  const root = chatsRoot(configDir, dir);
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return [];
+  }
+  const snaps: ChatDirSnapshot[] = [];
+  for (const dirName of names) {
+    const logPath = join(root, dirName, LOG_FILENAME);
+    try {
+      const log = statSync(logPath);
+      snaps.push({ dirName, mtimeMs: log.mtimeMs, logBytes: log.size, logText: readFileSync(logPath, 'utf8') });
+    } catch {
+      try {
+        const chatDir = statSync(join(root, dirName));
+        snaps.push({ dirName, mtimeMs: chatDir.mtimeMs, logBytes: 0, logText: '' });
+      } catch {
+        // Dir vanished between readdir and stat.
+      }
+    }
+  }
+  return snaps;
+}
 
 type JsonLine = { start: number; byteStart: number; json: Record<string, unknown> | null };
 

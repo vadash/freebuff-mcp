@@ -1,16 +1,15 @@
 // PTY driver adapted from Praket7/freebuff-mcp (MIT).
 /// <reference lib="es2024" />
 import { execFile } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
 import { ACK_TIMEOUT_MS, NEW_SETTLE_MS, POLL_MS, READY_TIMEOUT_MS, SCREEN_COLS, SCREEN_ROWS, STOP_GRACE_MS, STOP_POLL_MS, STOP_TIMEOUT_MS, TYPE_DELAY_MS } from './config.ts';
-import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, projectKey } from './protocol/chatStore.ts';
+import { byNewest, detectTurnEnd, DEFAULT_CONFIG_DIR, hasLineSince, lineMentionsPrompt, newestChatDir, readChats } from './protocol/chatStore.ts';
 import type { ChatDirSnapshot, TurnBaseline } from './protocol/chatStore.ts';
-import { CHATS_DIRNAME, INSTANCE_RECORD_FILENAME, LOCK_FILENAME, LOG_FILENAME, NEW_COMMAND, PASTE_END, PASTE_START, PROJECTS_DIRNAME } from './protocol/markers.ts';
+import { INSTANCE_RECORD_FILENAME, LOCK_FILENAME, NEW_COMMAND, PASTE_END, PASTE_START } from './protocol/markers.ts';
 import { CliTerminalScreen, classifyScreen } from './protocol/screen.ts';
 import { writeScreenDump } from './protocol/screenDump.ts';
 import { awaitSettled, type SettleIo } from './settle.ts';
@@ -49,7 +48,7 @@ export const resolveFreebuffCommand = (): { executable: string; argsPrefix: stri
 
 export const defaultDriverOptions = (): DriverOptions => ({
   ...resolveFreebuffCommand(),
-  configDir: join(homedir(), '.config', 'manicode'),
+  configDir: DEFAULT_CONFIG_DIR,
 });
 
 const pidAlive = (pid: number): boolean => {
@@ -126,7 +125,12 @@ export class FreebuffDriver {
   }
 
   newestLogSize(dir: string): number {
-    return newestChatDir(this.snapshot(this.chatsRoot(dir)))?.logBytes ?? 0;
+    return newestChatDir(this.store(dir))?.logBytes ?? 0;
+  }
+
+  // The chat store of this Instance's configDir, keyed by the target directory.
+  private store(dir: string): ChatDirSnapshot[] {
+    return readChats(this.options.configDir, dir);
   }
 
   kill(): void {
@@ -175,17 +179,7 @@ export class FreebuffDriver {
     return await this.waitSettled(instance, true);
   }
 
-  private chatsRoot(dir: string): string {
-    return join(
-      this.options.configDir,
-      PROJECTS_DIRNAME,
-      projectKey(dir),
-      CHATS_DIRNAME,
-    );
-  }
-
   async runTask(dir: string, prompt: string): Promise<string> {
-    const chatsRoot = this.chatsRoot(dir);
     const instance = await this.acquire(dir);
     const pty = instance.pty;
     const assertAlive = (): void => {
@@ -193,14 +187,14 @@ export class FreebuffDriver {
     };
     try {
       await this.waitSettled(instance, false);
-      const baseline = turnBaseline(this.snapshot(chatsRoot));
+      const baseline = turnBaseline(this.store(dir));
       if (this.options.keepAlive) await this.startConversation(pty);
       await this.pastePrompt(pty, prompt);
-      if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) {
+      if (!(await this.awaitAck(dir, baseline, prompt, assertAlive))) {
         await this.pastePrompt(pty, prompt);
-        if (!(await this.awaitAck(chatsRoot, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack_missing');
+        if (!(await this.awaitAck(dir, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack_missing');
       }
-      return await this.awaitTurnEnd(chatsRoot, baseline, assertAlive);
+      return await this.awaitTurnEnd(dir, baseline, assertAlive);
     } catch (error) {
       // A Watchdog respawn may already have replaced this Instance; never kill its successor.
       // A Turn that ended without an Answer leaves the Instance idle and healthy.
@@ -332,39 +326,14 @@ export class FreebuffDriver {
     pty.write('\r');
   }
 
-  private snapshot(chatsRoot: string): ChatDirSnapshot[] {
-    let names: string[];
-    try {
-      names = readdirSync(chatsRoot);
-    } catch {
-      return [];
-    }
-    const snaps: ChatDirSnapshot[] = [];
-    for (const dirName of names) {
-      const logPath = join(chatsRoot, dirName, LOG_FILENAME);
-      try {
-        const log = statSync(logPath);
-        snaps.push({ dirName, mtimeMs: log.mtimeMs, logBytes: log.size, logText: readFileSync(logPath, 'utf8') });
-      } catch {
-        try {
-          const dir = statSync(join(chatsRoot, dirName));
-          snaps.push({ dirName, mtimeMs: dir.mtimeMs, logBytes: 0, logText: '' });
-        } catch {
-          // Dir vanished between readdir and stat.
-        }
-      }
-    }
-    return snaps;
-  }
-
-  private async awaitAck(chatsRoot: string, baseline: TurnBaseline, prompt: string, assertAlive: () => void): Promise<boolean> {
+  private async awaitAck(dir: string, baseline: TurnBaseline, prompt: string, assertAlive: () => void): Promise<boolean> {
     const deadline = Date.now() + this.ackMs;
     while (Date.now() < deadline) {
       assertAlive();
-      if (this.ackReceived(this.snapshot(chatsRoot), baseline, prompt)) return true;
+      if (this.ackReceived(this.store(dir), baseline, prompt)) return true;
       await sleep(POLL_MS);
     }
-    return this.ackReceived(this.snapshot(chatsRoot), baseline, prompt);
+    return this.ackReceived(this.store(dir), baseline, prompt);
   }
 
   private ackReceived(snaps: ChatDirSnapshot[], baseline: TurnBaseline, prompt: string): boolean {
@@ -376,10 +345,10 @@ export class FreebuffDriver {
     return false;
   }
 
-  private async awaitTurnEnd(chatsRoot: string, baseline: TurnBaseline, assertAlive: () => void): Promise<string> {
+  private async awaitTurnEnd(dir: string, baseline: TurnBaseline, assertAlive: () => void): Promise<string> {
     for (;;) {
       assertAlive();
-      const { done, answer } = detectTurnEnd(this.snapshot(chatsRoot), baseline);
+      const { done, answer } = detectTurnEnd(this.store(dir), baseline);
       if (done) {
         // ADR-0001 #8: no backup Turn-end signal; a Turn without an Answer fails the Task.
         if (answer === null) throw new FreebuffDriverError('no_answer', 'the Turn ended without a fullResponse');

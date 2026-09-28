@@ -25,10 +25,10 @@ src/driver.ts        Driver: spawn, keystrokes, PTY adapter for the settle loop
 freebuff.exe         Instance
    ├─► Screen      src/protocol/screen.ts      @xterm/headless render, classifyScreen, freezeKey
    │                 src/protocol/signatures.ts  Screen signatures: the one recognition table
-   │                 src/protocol/markers.ts     every literal the protocol depends on
+   │                 src/protocol/markers.ts     every Marker: screen/chat patterns, keys, records
    │                 src/protocol/screenDump.ts  Screen dumps; installed CLI version
    │                 src/protocol/corpus.ts      corpus versions, for the screenDrift flag
-   └─► Chat store  src/protocol/chatStore.ts   Ack, Turn end, Answer
+   └─► Chat store  src/protocol/chatStore.ts   Ack, Turn end, Answer; DEFAULT_CONFIG_DIR + readChats
 ```
 
 `src/config.ts` holds every timing and limit. `scripts/streak-keeper.mjs` is

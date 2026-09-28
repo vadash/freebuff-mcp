@@ -6,17 +6,19 @@ import { requestPipe, waitForPipe } from '../src/ipc.ts';
 import { sleep } from '../src/util.ts';
 import { defaultDriverOptions } from '../src/driver.ts';
 import {
+  byNewest,
   detectTurnEnd,
+  DEFAULT_CONFIG_DIR,
   hasLineSince,
   lineMentionsPrompt,
   newestChatDir,
-  projectKey,
+  readChats,
   type TurnBaseline,
 } from '../src/protocol/chatStore.ts';
-import { CHATS_DIRNAME, PROJECTS_DIRNAME, READY_PROMPT } from '../src/protocol/markers.ts';
+import { READY_PROMPT } from '../src/protocol/markers.ts';
 import { recognizeScreen } from '../src/protocol/signatures.ts';
 import { workspaceDirFor } from '../src/workspace.ts';
-import { captureFixturesDir, RealCli, realChatsRoot, snapshotChats } from './helpers/capture.ts';
+import { captureFixturesDir, RealCli } from './helpers/capture.ts';
 import { expectExit, makeDirs, pollStatus, startSupervisor, uniquePipe, type SupervisorProcess } from './helpers/harness.ts';
 
 const gateOpen = process.env.FREEBUFF_REAL_SMOKE === '1';
@@ -75,17 +77,16 @@ const recoverStaleLockDialog = async (cli: RealCli, why: string): Promise<void> 
 };
 
 const chatStoreAnswer = (configDir: string, dir: string): string => {
-  const root = join(configDir, PROJECTS_DIRNAME, projectKey(dir), CHATS_DIRNAME);
-  const ordered = [...snapshotChats(root)].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const ordered = readChats(configDir, dir).sort(byNewest);
   for (const snap of ordered) {
     const turn = detectTurnEnd([snap], { dirName: snap.dirName, logBytes: 0 });
     if (turn.answer !== null) return turn.answer;
   }
-  throw new Error(`no chat log under ${root} holds a fullResponse yet`);
+  throw new Error(`no chat log for ${dir} under ${configDir} holds a fullResponse yet`);
 };
 
 const chatStoreHoldsPrompt = (configDir: string, dir: string, prompt: string): boolean =>
-  snapshotChats(join(configDir, PROJECTS_DIRNAME, projectKey(dir), CHATS_DIRNAME)).some((snap) =>
+  readChats(configDir, dir).some((snap) =>
     hasLineSince(snap, 0, (json) => lineMentionsPrompt(json, prompt)),
   );
 
@@ -160,13 +161,12 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
     const cli = new RealCli(captureCwd);
     cli.startUnknownWatch(join(captureCwd, 'unknown'));
     const save = (name: string): string => cli.saveFixture(screenFixturesDir, captureRawDir, name);
-    const chatsRoot = realChatsRoot(captureCwd);
     const newestBaseline = (): TurnBaseline => {
-      const newest = newestChatDir(snapshotChats(chatsRoot));
+      const newest = newestChatDir(readChats(DEFAULT_CONFIG_DIR, captureCwd));
       return newest ? { dirName: newest.dirName, logBytes: newest.logBytes } : { dirName: '', logBytes: 0 };
     };
     const ackReceived = (baseline: TurnBaseline, prompt: string): boolean =>
-      snapshotChats(chatsRoot).some((snap) =>
+      readChats(DEFAULT_CONFIG_DIR, captureCwd).some((snap) =>
         hasLineSince(snap, snap.dirName === baseline.dirName ? baseline.logBytes : 0, (json) => lineMentionsPrompt(json, prompt)),
       );
     // Submits one prompt and waits for its Turn to finish, using the chat store exactly
@@ -184,7 +184,7 @@ describe.skipIf(!gateOpen)('real freebuff smoke (set FREEBUFF_REAL_SMOKE=1 to ru
         cli.type('\r');
       }
       const deadline = Date.now() + 600_000;
-      while (!detectTurnEnd(snapshotChats(chatsRoot), baseline).done) {
+      while (!detectTurnEnd(readChats(DEFAULT_CONFIG_DIR, captureCwd), baseline).done) {
         if (Date.now() > deadline) throw new Error(`turn did not finish within 10 min: ${prompt}`);
         await sleep(1_000);
       }
