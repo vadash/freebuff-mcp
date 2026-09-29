@@ -86,8 +86,7 @@ code replaces the holder (ADR-0005).
 - **Queue**: FIFO of Tasks waiting behind the active one, depth 4. A full Queue
   fails with `busy` and a position.
 - **Conversation**: freebuff's chat context. `/new` starts a fresh one; the
-  Supervisor sends it before every Task. The `new_session` tool sends `/new` to the
-  running Instance, which is never killed for it. _Avoid:_ "session" (for the context).
+  Supervisor sends it before every Task. _Avoid:_ "session" (for the context).
 - **Turn**: the model's run on one Task, from submit to Turn end. The prompt
 goes in as one bracketed paste and is submitted once.
 - **TurnRunner**: the module that runs one Task's Turn: submits the prompt (the

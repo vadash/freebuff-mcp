@@ -104,7 +104,7 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
     expect(await inFlight).toBe(true);
   }, 30_000);
 
-  it('cancels the active task and resets the session through the new tools', async () => {
+  it('cancels the active task via the tool and resets the conversation via the pipe op', async () => {
     const c = boot('slow', { delayMs: 4000 });
     await c.connect(transport!);
     const inFlight = c
@@ -114,14 +114,14 @@ describe('freebuff MCP server (stdio, tools run_prompt/status)', () => {
         () => 'dropped',
       );
     await pollStatus(pipeName, { state: 'busy' });
-    const busyReset = (await c.callTool({ name: 'new_session', arguments: {} })) as CallResult;
-    expect(busyReset.isError).toBe(true);
-    expect(busyReset.content[0]!.text).toMatch(/active or queued/i);
+    const busyReset = await requestPipe<{ ok: boolean; error?: string }>(pipeName, { op: 'new_session' });
+    expect(busyReset.ok).toBe(false);
+    expect(busyReset.error).toMatch(/active or queued/i);
     expect(toolText((await c.callTool({ name: 'cancel_task', arguments: {} })) as CallResult)).toBe('ok');
     expect(await inFlight).toBe(true);
     await pollStatus(pipeName, { state: 'stopped', queueDepth: 0 });
-    const idleReset = (await c.callTool({ name: 'new_session', arguments: {} })) as CallResult;
-    toolText(idleReset);
+    const idleReset = await requestPipe<{ ok: boolean }>(pipeName, { op: 'new_session' });
+    expect(idleReset.ok).toBe(true);
     const next = (await c.callTool({
       name: 'run_prompt',
       arguments: { dir: dirs.taskDir, prompt: 'after reset' },

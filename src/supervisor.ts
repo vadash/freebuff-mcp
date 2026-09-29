@@ -196,6 +196,7 @@ export class Supervisor {
 
   // Issue #18: /new goes to the ready Instance, which keeps running. On the Welcome
   // screen or with no Instance there is no Conversation to leave: every Task starts with /new.
+  // Pipe op only: not registered as an MCP tool; kept for a future re-exposure.
   private async newConversation(): Promise<SupervisorResponse> {
     if (this.active !== null || this.queue.length > 0 || this.startingConversation) {
       return { ok: false, kind: 'error', error: 'new_session failed: a task is active or queued' };

@@ -81,41 +81,41 @@ export class SupervisorClient {
 }
 
 export const createMcpServer = (client: SupervisorClient): McpServer => {
-  const server = new McpServer({ name: 'freebuff-supervisor', version: '0.1.0' });
+  const server = new McpServer(
+    { name: 'freebuff-supervisor', version: '0.1.1' },
+    {
+      instructions:
+        'Drives the freebuff CLI in one long-lived instance: exactly one task runs at a time; extra run_prompt calls queue FIFO (depth 4); a full queue fails with {busy, position}. run_prompt blocks until the final answer — up to 20 minutes — so call it and wait; status, screen and doctor are diagnostics only. Every task starts a fresh conversation: nothing carries over between prompts, so each prompt must be self-contained. cancel_task stops the active task; a failed or cancelled prompt is never resent.',
+    },
+  );
   server.tool(
     'run_prompt',
-    'Queue a prompt against the repo at `dir` and wait for the final answer. Changing `dir` between calls swaps the workspace junction at idle time and purges queued tasks; a change while a task is active is refused. A full queue fails with {busy, position}; a turn that ends without an answer fails with no_answer.',
+    "Run `prompt` in the repo at `dir`; returns freebuff's final answer. Changing `dir` between calls retargets the workspace and purges queued tasks; refused while a task runs. A turn that ends without an answer fails with `no_answer`.",
     { dir: z.string().describe('Real repo directory for this task'), prompt: z.string().describe('Task prompt') },
     async ({ dir, prompt }) =>
       result(await client.request({ op: 'run_prompt', dir, prompt }, client.taskTimeoutMs + REQUEST_TIMEOUT_MS)),
   );
   server.tool(
     'cancel_task',
-    'Cancel the active task. The driver is stopped gracefully (ESC then Ctrl-C) and killed if it does not go idle; the next queued task runs afterward.',
+    'Stop the active task. The next queued task runs afterward.',
     {},
     async () => result(await client.request({ op: 'cancel_task' })),
   );
   server.tool(
-    'new_session',
-    'Start a new conversation by sending /new to the running freebuff, which keeps running. Rejected while a task is active or queued.',
-    {},
-    async () => result(await client.request({ op: 'new_session' })),
-  );
-  server.tool(
     'status',
-    'Report supervisor state, the fixed workspace directory the Instance runs in, the repo directory the workspace junction currently targets, queue depth, and active model.',
+    'Supervisor diagnostics as JSON: state, queue depth, workspace directory, current repo target, active model, Hour-session minutes left, login and screen-drift flags.',
     {},
     async () => result(await client.request({ op: 'status' })),
   );
   server.tool(
     'screen',
-    "Return the running freebuff Instance's current Screen, flattened to text — the exact text the supervisor's Driver and Watchdog read. Works in every supervisor state.",
+    "The running freebuff's current terminal screen, flattened to text; usable in any supervisor state.",
     {},
     async () => result(await client.request({ op: 'screen' })),
   );
   server.tool(
     'doctor',
-    'Report pass, degraded or fail for the showing freebuff screen against its Screen signature, naming the missing Markers when Drift has started.',
+    'Screen-health check after a freebuff CLI update: `pass`, `degraded` (names the missing markers) or `fail`; skipped while no instance idles.',
     {},
     async () => result(await client.request({ op: 'doctor' })),
   );

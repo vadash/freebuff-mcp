@@ -53,9 +53,8 @@ one early. There is no model selection: freebuff runs the model it remembers
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `run_prompt` | `dir`, `prompt` | Queues the prompt against the repo `dir` and waits for freebuff's final answer. The supervisor mounts `dir` at the `repo` junction inside the Workspace (swapping it while no task runs; a switch while a task is active is refused). The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in the Workspace and passed by reference. |
+| `run_prompt` | `dir`, `prompt` | Queues the prompt against the repo `dir` and waits for freebuff's final answer. Each task runs in a fresh conversation, so a prompt must be self-contained. The supervisor mounts `dir` at the `repo` junction inside the Workspace (swapping it while no task runs; a switch while a task is active is refused). The prompt is sent as one bracketed paste and submitted once, so multi-line prompts arrive intact. Prompts over 64 KB are written to a file in the Workspace and passed by reference. |
 | `cancel_task` | none | Stops the active task by stopping freebuff; the next queued task then runs. |
-| `new_session` | none | Starts a fresh conversation by sending `/new` to the running freebuff, which keeps running (a no-op on the Welcome screen or with no instance). Refused while a task is active or queued. |
 | `status` | none | JSON with the fields below. |
 | `screen` | none | The running Instance's current Screen, flattened to text — the exact text the supervisor reads. Works in every supervisor state; empty until the Instance first paints. |
 | `doctor` | none | Reports the showing Screen's verdict against its Screen signature: `pass` (every Marker present), `degraded` (Drift has started — threshold still met, some Marker missing, named in `missing`) or `fail` (below threshold). Returns `{ ok, skipped, screen, level, missing }`; `skipped` (with `ok: false`) when no idle instance is running. Advisory: a drift report never blocks a task. |
