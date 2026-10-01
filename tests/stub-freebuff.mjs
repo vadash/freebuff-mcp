@@ -14,7 +14,16 @@
 // it ends normally. FREEBUFF_STUB_INPUT_LOG (issue #18) names a JSON-lines file
 // recording each spawn, each bracketed paste and each submitted input line, so
 // tests see exactly what the driver sent. Mode `no-answer` ends the first Turn
-// without a fullResponse. Mode `unknown` (issue #21) boots into a screen matching
+// without a fullResponse. Issue #34: FREEBUFF_STUB_HELD_LOG_MS makes the stub buffer
+// its chat-store writes the way a held CLI flush does — a number releases them after
+// that many ms, the value `exit` holds them until the process exits, so neither the
+// Ack nor the Turn end ever lands. FREEBUFF_STUB_HOLDING_MS boots into the
+// holding banner screen for that many ms; the banner swallows Enters, so
+// input typed into it accumulates and is flushed as one merged line when it clears
+// (a `/new` merged with the following paste renders as the CLI's
+// `Command not found: "…"` store line). Mid-Turn the stub shows the working Screen:
+// the ready layout plus the elapsed ticker (`working · 1s · ■ Esc`). Mode `unknown`
+// (issue #21) boots into a screen matching
 // no known class and repaints it with a ticking Countdown; an accepted Enter flips
 // it to the Welcome screen (the Fallback Enter lands in the input box); the first
 // FREEBUFF_STUB_UNKNOWN_IGNORE_ENTER Enters are swallowed so tests can observe
@@ -55,6 +64,12 @@ const sessionAlive = process.env.FREEBUFF_STUB_SESSION_ALIVE === '1';
 const noCountdown = process.env.FREEBUFF_STUB_NO_COUNTDOWN === '1';
 const turnLines = process.env.FREEBUFF_STUB_TURN_LINES ? JSON.parse(process.env.FREEBUFF_STUB_TURN_LINES) : [];
 let turnCounter = 0;
+// Issue #34: held chat-store flushes — a number delays every write, `exit` holds them
+// until the process exits so the Ack and the Turn end never land.
+const heldLogMs = process.env.FREEBUFF_STUB_HELD_LOG_MS ?? null;
+const heldExit = [];
+// Issue #34: the holding banner stays up this many ms after boot.
+const holdingMs = Number(process.env.FREEBUFF_STUB_HOLDING_MS ?? 0);
 const inputLog = process.env.FREEBUFF_STUB_INPUT_LOG ?? null;
 const logInput = (entry) => {
   if (inputLog !== null) appendFileSync(inputLog, JSON.stringify(entry) + '\n');
@@ -108,7 +123,8 @@ const swapBalance = (text) => text.replace(BALANCE_LINE, `${balanceLeft}/${balan
 
 // ADR-0004: the Instance idles on the Welcome screen — first message starts the
 // Hour session.
-const welcomeScreen = () => CLEAR + crlf(swapBalance(swapFooterDir(fixture('welcome.ansi').replace('\x1b[2J\x1b[H\n', ''))));
+const welcomeBody = () => swapBalance(swapFooterDir(fixture('welcome.ansi').replace('\x1b[2J\x1b[H\n', '')));
+const welcomeScreen = () => CLEAR + crlf(welcomeBody());
 
 // The session screen: the same layout with `Session active` in the info box, the
 // usage line carrying the Countdown, and the turn transcript above. The Countdown
@@ -131,8 +147,32 @@ const swapCountdown = (body) => {
 
 // The session screen: the same layout with `Session active` in the info box, the
 // usage line carrying the Countdown, and the turn transcript above.
-const readyScreen = () =>
-  CLEAR + crlf(swapCountdown(swapBalance(swapFooterDir(fixture('ready.ansi').replace('\x1b[2J\x1b[H\n', '')))));
+const sessionBody = () => swapCountdown(swapBalance(swapFooterDir(fixture('ready.ansi').replace('\x1b[2J\x1b[H\n', ''))));
+const readyScreen = () => CLEAR + crlf(sessionBody());
+
+// Issue #34: one line inserted above the input box, where the real TUI renders the
+// mid-Turn ticker and the holding banner.
+const withLineAboveBox = (body, line) => {
+  const lines = body.split('\n');
+  // Appended after the input box rather than above it: the real TUI paints the line
+  // above the box, but inserting mid-body shifts the box rows off the fixed screen
+  // height and breaks the region geometry the signatures are tuned against. The
+  // bottom-rows region still contains the line either way.
+  const at = lines.findIndex((candidate) => candidate.startsWith('╭'));
+  lines.splice(at === -1 ? lines.length : at, 0, line);
+  return lines.join('\n');
+};
+
+// The mid-Turn working Screen: the session layout plus the real TUI's elapsed ticker
+// (`working · 3s · ■ Esc`, negative/mid-turn-esc) above the input box — the second
+// Ack signal (issue #34) when the CLI holds its chat-store flushes.
+const workingScreen = () => CLEAR + crlf(withLineAboveBox(sessionBody(), ' working · 1s · ■ Esc'));
+
+// The holding banner (issue #34): the boot screen plus the banner line above
+// the input box, shown until the CLI rejoins. Enters typed into it are swallowed.
+const HOLDING_BANNER_LINE = 'Freebuff session over; holding queued messages until rejoin';
+const bannerScreen = () => CLEAR + crlf(withLineAboveBox(sessionAlive ? sessionBody() : welcomeBody(), ` ${HOLDING_BANNER_LINE}`));
+const bootSettledScreen = () => (sessionAlive ? readyScreen() : welcomeScreen());
 
 // 0.1.0 shows no Continue screen at plain expiry (the box just reverts to the Welcome
 // wording); `Press Enter to continue` now belongs to the out-of-credits dialog, which
@@ -199,6 +239,53 @@ let newChatRequested = false;
 let lastLogPath = null;
 let expireShown = false;
 
+// Issue #34: every chat-store write of a Turn goes through here, so the held-flush
+// behavior covers the Ack line, the Turn end and progress lines alike.
+const storeWrite = (line) => {
+  if (heldLogMs === null) {
+    appendFileSync(lastLogPath, line);
+  } else if (heldLogMs === 'exit') {
+    heldExit.push([lastLogPath, line]);
+  } else {
+    const path = lastLogPath;
+    setTimeout(() => appendFileSync(path, line), Number(heldLogMs));
+  }
+};
+process.on('exit', () => {
+  for (const [path, line] of heldExit) {
+    try {
+      appendFileSync(path, line);
+    } catch {
+      // The Workspace may already be gone at exit; the held lines are then unobservable.
+    }
+  }
+});
+
+// Issue #34: while the holding banner is up the TUI swallows Enters, so
+// typed input accumulates in the input buffer and is flushed as ONE line when the
+// banner clears — the merged-command incident.
+let holding = false;
+const endHolding = () => {
+  if (pasting) {
+    // Never split a bracketed paste mid-flight; retry just after it completes.
+    setTimeout(endHolding, 50);
+    return;
+  }
+  holding = false;
+  out(bootSettledScreen());
+  const merged = pending;
+  pending = '';
+  if (merged !== '') {
+    logInput({ event: 'submit', text: merged });
+    void submit(merged);
+  }
+};
+const beginHolding = () => {
+  holding = true;
+  out(bannerScreen());
+  setTimeout(endHolding, holdingMs);
+};
+
 const chatsRoot = () => join(configDir, 'projects', projectKey, 'chats');
 
 const chatsExist = () => {
@@ -221,10 +308,19 @@ const submit = async (prompt) => {
     newChatRequested = true;
     return;
   }
-  // The first message starts the Hour session: the screen flips to the session view.
+  // Issue #34: a line that begins with /new but carries more is the holding banner's
+  // merged flush; the real CLI renders it as its command-parse error and starts nothing
+  // (error.ansi).
+  if (prompt.startsWith('/new')) {
+    const dir = join(chatsRoot(), `chat-${chatCounter++}`);
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, 'log.jsonl'), JSON.stringify({ [MSG_KEY]: `Command not found: "${prompt}"` }) + '\n');
+    return;
+  }
+  // The first message starts the Hour session: the screen flips to the working view.
   if (phase === 'idle') {
     phase = 'ready';
-    out(readyScreen());
+    out(workingScreen());
   }
   const dirName = newChatRequested ? `chat-new-${chatCounter++}` : `chat-${chatCounter++}`;
   newChatRequested = false;
@@ -240,7 +336,7 @@ const submit = async (prompt) => {
   const answer = `stub(${model}): ${prompt}`;
   await sleep(30 + Math.random() * 50);
   if (mode === 'slow') await sleep(Number(process.env.FREEBUFF_STUB_DELAY_MS ?? 5000));
-  appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: prompt }) + '\n');
+  storeWrite(JSON.stringify({ [MSG_KEY]: prompt }) + '\n');
   if (crashThisTurn) {
     setTimeout(() => process.exit(9), 100);
     return;
@@ -257,18 +353,21 @@ const submit = async (prompt) => {
   if (chatterThisTurn) {
     for (let tick = 0; ; tick++) {
       await sleep(200);
-      appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: `progress ${tick}` }) + '\n');
+      storeWrite(JSON.stringify({ [MSG_KEY]: `progress ${tick}` }) + '\n');
       out(`working ${tick}\r\n`);
     }
   }
   for (const line of linesThisTurn) out(`${line}\r\n`);
   await sleep(30 + Math.random() * 50);
-  appendFileSync(
-    lastLogPath,
+  storeWrite(
     JSON.stringify({ type: 'end', role: 'agent', [SHOULD_END_TURN_KEY]: true, data: noAnswerThisTurn ? {} : { [FULL_RESPONSE_KEY]: answer } }) + '\n',
   );
   await sleep(30 + Math.random() * 50);
-  appendFileSync(lastLogPath, JSON.stringify({ [MSG_KEY]: TURN_END_MSG }) + '\n');
+  storeWrite(JSON.stringify({ [MSG_KEY]: TURN_END_MSG }) + '\n');
+  // The Turn is over: back to the ready input box. A held-flush CLI is mid-Turn on the
+  // Screen too (issue #34), so the repaint waits for the same flush as the store lines.
+  if (heldLogMs === null) out(readyScreen());
+  else if (heldLogMs !== 'exit') setTimeout(() => out(readyScreen()), Number(heldLogMs));
   // Issue #11: the Hour session expiring shows the captured Continue screen; Enter
   // starts the next Hour session.
   if (mode === 'expire' && !expireShown) {
@@ -322,7 +421,11 @@ process.stdin.on('data', (chunk) => {
       pasted += char;
     } else if (char === '\r') {
       // Raw mode delivers Enter as CR; a stray LF must not count as a second Enter.
-      if (dialogStuck) {
+      if (holding) {
+        // Issue #34: the holding banner swallows Enters; chars stay buffered and
+        // flush as one merged line when the banner clears.
+        continue;
+      } else if (dialogStuck) {
         logInput({ event: 'enter' });
         dialogStuck = false;
         phase = 'idle';
@@ -388,7 +491,11 @@ if (mode === 'unknown') {
     out(LOGIN_REQUIRED + '\r\n');
     for (;;) await sleep(1_000);
   }
-  if (sessionAlive) {
+  // Issue #34: the boot lands in the holding banner; it clears into the
+  // settled screen and flushes whatever was typed into it as one merged line.
+  if (holdingMs > 0) {
+    beginHolding();
+  } else if (sessionAlive) {
     phase = 'ready';
     out(readyScreen());
   } else {

@@ -70,6 +70,16 @@ export const awaitSettled = async (io: SettleIo, opts: SettleOpts): Promise<Sett
       await io.sleep(POLL_MS);
       continue;
     }
+    if (recognition.screen === 'holding banner') {
+      // Issue #34: the CLI holds queued input until it rejoins, and the banner swallows
+      // Enters — a `/new` typed into it merges with the following paste into one command
+      // line. The banner clears on its own, so the settled-screen wait rides it out with
+      // no keystroke at all, under the same deadline as every settled state; expiry
+      // fails ready_timeout below.
+      unknownSince = null;
+      await io.sleep(POLL_MS);
+      continue;
+    }
     if (recognition.screen === null) {
       // Issue #23: after ~10 s of continuously unrecognized Screen, press Enter once
       // and let the loop re-evaluate; any recognized screen restarts the wait.

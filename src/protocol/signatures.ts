@@ -4,11 +4,12 @@
 // text against the table. Markers match case-insensitively and whitespace-tolerantly,
 // so one reworded space or case change is not Drift. When two signatures match, the
 // table's order is the fixed priority: Session-in-use dialog > login gate > connecting
-// > Continue > Welcome screen > ready. Thresholds, regions and strong/weak labels are
-// tuned against the fixture corpus (`tests/corpus.test.ts`), the acceptance bar.
-import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, LOGIN_REQUIRED, READY_PROMPT, SINGLE_INSTANCE_MARKERS, WELCOME_BOX } from './markers.ts';
+// > holding banner > Continue > Welcome screen > working > ready. Thresholds, regions
+// and strong/weak labels are tuned against the fixture corpus (`tests/corpus.test.ts`),
+// the acceptance bar.
+import { CONNECTING_REGEX, CONTINUE_PROMPT, COUNTDOWN_REGEX, FREEBUCKS_BALANCE_REGEX, HOLDING_BANNER, LOGIN_REQUIRED, READY_PROMPT, SINGLE_INSTANCE_MARKERS, WELCOME_BOX, WORKING_TICKER_REGEX } from './markers.ts';
 
-export type KnownScreen = 'Welcome screen' | 'ready' | 'Continue' | 'Session-in-use dialog' | 'login gate' | 'connecting';
+export type KnownScreen = 'Welcome screen' | 'ready' | 'Continue' | 'Session-in-use dialog' | 'login gate' | 'connecting' | 'working' | 'holding banner';
 
 /** pass: every Marker present; degraded: threshold met, some Marker missing (Drift has
  *  started, the missing Markers are named); fail: below threshold. */
@@ -98,6 +99,16 @@ const SIGNATURES: ScreenSignature[] = [
     markers: [{ name: 'CONNECTING_REGEX', pattern: CONNECTING_REGEX, strong: true }],
   },
   {
+    // Issue #34: the holding banner overlays the settled screen while the CLI
+    // holds queued input until it rejoins; it clears on its own. It outranks the screen
+    // beneath it because the Driver must wait it out before typing `/new` — a keystroke
+    // typed into the banner merges with the following paste into one command line.
+    screen: 'holding banner',
+    bottomRows: 12,
+    threshold: 1,
+    markers: [{ name: 'HOLDING_BANNER', pattern: tolerant([HOLDING_BANNER]), strong: true }],
+  },
+  {
     // Single strong Marker: 0.1.0 replaced `Session ended` with a credits summary, so
     // the prompt tail is the one literal both generations share. `Press Enter to
     // continue` appears nowhere else (issue #22 analysis).
@@ -114,6 +125,19 @@ const SIGNATURES: ScreenSignature[] = [
     bottomRows: 'all',
     threshold: 1,
     markers: [{ name: 'WELCOME_BOX', pattern: tolerant([WELCOME_BOX]), strong: true }],
+  },
+  {
+    // Issue #34: the mid-Turn Screen — the ready layout plus the elapsed ticker above
+    // the input box. It outranks ready because a working frame still shows the input
+    // box; the ticker is the strong Marker, the ready prompt a weak one, so a drifted
+    // input box degrades working instead of failing it.
+    screen: 'working',
+    bottomRows: 12,
+    threshold: 1,
+    markers: [
+      { name: 'WORKING_TICKER_REGEX', pattern: marker(WORKING_TICKER_REGEX), strong: true },
+      { name: 'READY_PROMPT', pattern: tolerant([READY_PROMPT]), strong: false },
+    ],
   },
   {
     screen: 'ready',

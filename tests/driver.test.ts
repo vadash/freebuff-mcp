@@ -13,8 +13,10 @@ import { sleep } from '../src/util.ts';
 const stub = fileURLToPath(new URL('./stub-freebuff.mjs', import.meta.url));
 
 // Issue #18/#23: what the stub received, from FREEBUFF_STUB_INPUT_LOG.
-const inputEvents = (logDir: string, event: StubInput['event']): StubInput[] =>
-  readStubInputs(join(logDir, 'stub-input.jsonl')).filter((entry) => entry.event === event);
+const inputEvents = <E extends StubInput['event']>(logDir: string, event: E): Array<Extract<StubInput, { event: E }>> =>
+  readStubInputs(join(logDir, 'stub-input.jsonl')).filter(
+    (entry): entry is Extract<StubInput, { event: E }> => entry.event === event,
+  );
 
 const harness = (
   mode: string,
@@ -234,4 +236,71 @@ describe('FreebuffDriver', () => {
     expect(dumps).toHaveLength(1);
     expect(readFileSync(join(versionDir, dumps[0]!), 'utf8')).toContain('Quantum flux calibration panel');
   }, 45_000);
+
+  // Issue #34: the 2026-10-01 incident — the CLI held its chat-store flushes for the
+  // whole Turn, so the store Ack never landed inside the Ack windows and running Tasks
+  // were killed mid-review. The Ack is therefore EITHER signal: the store line, or the
+  // Screen naming the working state in the recognition table. A working Screen is never
+  // re-pasted into and never killed on ack grounds; the Task rides to Turn end.
+
+  it('acks from the store when the held flush lands inside the Ack window', async () => {
+    const { driver, dir } = harness('happy', undefined, { stubEnv: { FREEBUFF_STUB_HELD_LOG_MS: '1000' } });
+    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello driver');
+  }, 30_000);
+
+  it('rides a working Screen past both Ack windows without re-paste or kill while the store stays held', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'freebuff-input-'));
+    const { driver, dir } = harness('happy', { ackMs: 600 }, {
+      stubEnv: { FREEBUFF_STUB_HELD_LOG_MS: 'exit', FREEBUFF_STUB_INPUT_LOG: join(logDir, 'stub-input.jsonl') },
+      keepAlive: true,
+    });
+    const task = driver.runTask(dir, 'hello driver').catch(() => {});
+    // Observe strictly past both Ack windows (2 × 600 ms plus the settle/paste
+    // lead-in): the wait ends early only if a regression killed the Instance, so the
+    // assertions below always evaluate on the post-window state.
+    const deadline = Date.now() + 5_000;
+    while (driver.instanceState() !== 'stopped' && Date.now() < deadline) await sleep(100);
+    // Signal B: the Screen named the working state through the recognition table.
+    const { recognition } = classifyScreen(driver.screenText());
+    expect(recognition.screen).toBe('working');
+    // Exactly one paste, and the Instance alive past both windows: no re-paste, no
+    // kill on ack grounds — the Task rides to Turn end.
+    expect(inputEvents(logDir, 'paste')).toHaveLength(1);
+    expect(driver.instanceState()).toBe('live');
+    // Stopping the Instance ends the ride; the stub's exit flush may land the held
+    // Turn end in the store before the Driver observes the exit, so the task's own
+    // outcome (answer or process_exited) stays unasserted — the survival facts above
+    // are the acceptance.
+    await driver.stop();
+    await task;
+  }, 30_000);
+
+  it('keeps one re-paste and the ack_missing kill when the Screen never shows working', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'freebuff-input-'));
+    const { driver, dir } = harness('no-ack', { ackMs: 500 }, {
+      stubEnv: { FREEBUFF_STUB_HELD_LOG_MS: 'exit', FREEBUFF_STUB_INPUT_LOG: join(logDir, 'stub-input.jsonl') },
+      keepAlive: true,
+    });
+    await expect(driver.runTask(dir, 'hello driver')).rejects.toMatchObject({ reason: 'ack_missing' });
+    expect(inputEvents(logDir, 'paste')).toHaveLength(2);
+    expect(driver.instanceState()).toBe('stopped');
+  }, 30_000);
+
+  // Issue #34, the deferred /new: booted inside the holding banner, the
+  // Driver must not type `/new` (or paste) into it — the CLI swallows the Enters and
+  // flushes the buffered keystrokes as ONE merged line (`Command not found:
+  // "/new…"`, the incident's fingerprint). The settled-screen wait rides the banner
+  // out (bounded by the ready timeout), so command and paste submit separately once
+  // it clears, and the Task succeeds normally.
+  it('defers /new until the holding banner has cleared and submits command and paste separately', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'freebuff-input-'));
+    const { driver, dir } = harness('happy', { readyMs: 20_000 }, {
+      stubEnv: { FREEBUFF_STUB_HOLDING_MS: '1500', FREEBUFF_STUB_INPUT_LOG: join(logDir, 'stub-input.jsonl') },
+      keepAlive: true,
+    });
+    await expect(driver.runTask(dir, 'hello driver')).resolves.toBe('stub(DeepSeek V4.1 Flash): hello driver');
+    // Exactly the two intended submissions in order, one paste — no merged line.
+    expect(inputEvents(logDir, 'submit').map((entry) => entry.text)).toEqual(['/new', 'hello driver']);
+    expect(inputEvents(logDir, 'paste')).toHaveLength(1);
+  }, 30_000);
 });

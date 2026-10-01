@@ -93,8 +93,9 @@ goes in as one bracketed paste and is submitted once.
   fixed preamble; over 64 KB as a file referral), owns the Watchdog for the
   Turn's duration, and classifies the outcome: Answer, deadline, frozen,
   crashed, cancelled, no Answer. Respawn policy stays with the Supervisor.
-- **Ack**: the Chat store line proving freebuff received the prompt. One retry
-  if it is missing.
+- **Ack**: the Chat store line proving freebuff received the prompt; the Screen
+  showing the working state corroborates receipt. One retry only when neither
+  signal appears.
 - **Turn end**: the `Main prompt finished` line in the Chat store after the
   Task's baseline.
 - **Answer**: `data.fullResponse` of the Turn end line; what `run_prompt`
@@ -114,6 +115,16 @@ goes in as one bracketed paste and is submitted once.
 - **Marker**: one screen or chat pattern the protocol depends on, backed by
   fixtures. A screen Marker is strong (specific to its screen) or weak
   (generic, e.g. `Esc`). _Avoid:_ "cue".
+- **Holding banner**: the line freebuff paints over a settled Screen while the
+  CLI holds queued input until it rejoins the Hour session ("Freebuff session
+  over; holding queued messages until rejoin"). It swallows Enters: anything
+  typed into it flushes as one merged line when it clears. The Settle loop
+  rides it out; `/new` waits until it clears.
+  _Avoid:_ "reconnect banner".
+- **Working screen**: the mid-Turn Screen: the elapsed spinner with the
+  Esc hint over the settled Screen. Its appearance after a submit corroborates
+  the Ack.
+  _Avoid:_ "spinner screen".
 - **Screen signature**: how a known screen is recognized: its Markers, how
   many must match (at least one strong), and the region of the Screen they
   are searched in. When two signatures match, a fixed priority decides.
@@ -139,7 +150,8 @@ goes in as one bracketed paste and is submitted once.
   signal, never a version bump alone.
 - **Settle loop**: the Driver's wait, at spawn and before each Task, for a settled
   Screen: `ready`, or `idle` at the Welcome screen or Continue screen. While it
-  waits it names each Screen through the one recognition table, saves unknown and
+  waits it names each Screen through the one recognition table, rides the
+  Holding banner out without keystrokes, saves unknown and
   degraded Screens as Screen dumps, answers the Session-in-use dialog through the
   one Enter throttle shared with the Fallback Enter, and presses the Continue
   screen once per Task arrival. Its deadline fails the Task with `ready_timeout`.

@@ -21,6 +21,17 @@ export const SINGLE_INSTANCE_MARKERS = ['Session already in use', 'Only one free
 // is gone and the prompt shrank, so the marker is the shared tail of both wordings.
 export const CONTINUE_PROMPT = 'Press Enter to continue';
 
+// Issue #34: the mid-Turn elapsed ticker above the input box (`working · 3s · ■ Esc`,
+// negative/mid-turn-esc). The Screen naming the working state is the second Ack
+// signal when the CLI holds its chat-store flushes; the ticker is also a timer line
+// for the Freeze key (issue #31).
+export const WORKING_TICKER_REGEX = /working · \d+s · ■ Esc/;
+
+// Issue #34: the holding banner the CLI shows while it holds queued input
+// until it rejoins the Hour session. Nothing may be typed into it: a `/new` keystroke
+// merges with the following paste into one command line, so the Driver waits it out.
+export const HOLDING_BANNER = 'holding queued messages until rejoin';
+
 // Known error renderings seen during a Turn (error.ansi); logged, never acted on.
 export const KNOWN_ERROR_STRINGS: readonly string[] = ['Command not found: '];
 

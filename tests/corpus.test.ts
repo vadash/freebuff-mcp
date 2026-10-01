@@ -35,6 +35,8 @@ const RECOGNIZED_AS: Record<string, KnownScreen> = {
   'partial-line': 'connecting',
   'repaint': 'ready',
   'split-escape': 'ready',
+  'working': 'working',
+  'holding-banner': 'holding banner',
 };
 
 // Version folders grow only by a deliberate capture or dump promotion (tests/fixtures/screen/AGENTS.md).
@@ -77,13 +79,12 @@ describe('screen fixture corpus (issue #27)', () => {
 
   describe('negative', () => {
     // Ready frames baiting a loosened Continue signature (issue #28): an Answer carrying
-    // the Continue wording, and a mid-Turn status line showing Esc. The Answer's quoted
-    // prompt sits in the transcript area, above the Continue signature's bottom-rows
-    // region, and the mid-Turn frame lost the Countdown line — both stay ready, never
-    // Continue.
-    const NOT_CONTINUE: Record<string, { level: 'pass' | 'degraded'; missing: string[] }> = {
-      'continue-wording-answer': { level: 'pass', missing: [] },
-      'mid-turn-esc': { level: 'degraded', missing: ['COUNTDOWN_REGEX'] },
+    // the Continue wording stays ready (the quote sits in the transcript area, above the
+    // Continue signature's bottom-rows region), and the mid-Turn frame (issue #34) is
+    // named working by its ticker Marker — neither ever reads as Continue.
+    const NOT_CONTINUE: Record<string, { screen: KnownScreen; level: 'pass' | 'degraded'; missing: string[] }> = {
+      'continue-wording-answer': { screen: 'ready', level: 'pass', missing: [] },
+      'mid-turn-esc': { screen: 'working', level: 'pass', missing: [] },
     };
 
     it('accounts for every fixture in the folder', () => {
@@ -96,10 +97,11 @@ describe('screen fixture corpus (issue #27)', () => {
     });
 
     it.each(Object.keys(NOT_CONTINUE))('%s.ansi is not the Continue screen', async (name) => {
+      const expected = NOT_CONTINUE[name]!;
       const recognition = recognizeScreen(await load('negative', name));
-      expect(recognition.screen, `${name}.ansi must not read as Continue`).toBe('ready');
-      expect(recognition.level, `${name}.ansi`).toBe(NOT_CONTINUE[name]!.level);
-      expect(recognition.missing, `${name}.ansi`).toEqual(NOT_CONTINUE[name]!.missing);
+      expect(recognition.screen, `${name}.ansi must not read as Continue`).toBe(expected.screen);
+      expect(recognition.level, `${name}.ansi`).toBe(expected.level);
+      expect(recognition.missing, `${name}.ansi`).toEqual(expected.missing);
     });
   });
 
@@ -137,6 +139,15 @@ describe('screen fixture corpus (issue #27)', () => {
     it('the login gate without its Marker is not recognized', async () => {
       const recognition = recognizeScreen(await withoutLinesContaining('synthetic', 'login-required', 'Not authenticated'));
       expect(recognition.screen).toBeNull();
+    });
+
+    // Issue #34: the working frame without its ticker falls back to degraded ready (the
+    // Countdown line is gone mid-Turn) — never a bare pass off the weak ready prompt.
+    it('the working frame without its ticker is degraded ready', async () => {
+      const recognition = recognizeScreen(await withoutLinesContaining('negative', 'mid-turn-esc', '■ Esc'));
+      expect(recognition.screen).toBe('ready');
+      expect(recognition.level).toBe('degraded');
+      expect(recognition.missing).toEqual(['COUNTDOWN_REGEX']);
     });
   });
 });

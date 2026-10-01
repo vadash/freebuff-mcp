@@ -257,21 +257,33 @@ export class FreebuffDriver {
     const assertAlive = (): void => {
       if (instance.exited) throw new FreebuffDriverError('process_exited');
     };
+    // Which Ack signal accepted the submission. null past both windows is the only
+    // ack_missing ground — and the only ack-ground kill (issue #34): nothing
+    // demonstrably started, so nothing running is destroyed.
+    let ack: 'store' | 'screen' | null = null;
     try {
       await this.waitSettled(instance, false);
       const baseline = turnBaseline(this.store(dir));
       if (this.keepAlive) await this.startConversation(pty);
       await this.pastePrompt(pty, prompt);
-      if (!(await this.awaitAck(dir, baseline, prompt, assertAlive))) {
+      // Issue #34: the Ack is a two-signal check. Signal A — the store line naming the
+      // prompt (canonical, unchanged). Signal B — the Screen crossing into the working
+      // state after submit, for the CLI that runs the Task while holding its store
+      // flushes. Either inside the Ack window accepts; only neither does.
+      ack = await this.awaitAck(dir, baseline, prompt, instance, assertAlive);
+      if (ack === null) {
         await this.pastePrompt(pty, prompt);
-        if (!(await this.awaitAck(dir, baseline, prompt, assertAlive))) throw new FreebuffDriverError('ack_missing');
+        ack = await this.awaitAck(dir, baseline, prompt, instance, assertAlive);
+        if (ack === null) throw new FreebuffDriverError('ack_missing');
       }
       return await this.awaitTurnEnd(dir, baseline, assertAlive);
     } catch (error) {
       // A Watchdog respawn may already have replaced this Instance; never kill its successor.
-      // A Turn that ended without an Answer leaves the Instance idle and healthy.
+      // A Turn that ended without an Answer leaves the Instance idle and healthy — and so
+      // does a Task the Ack saw start (store line or working Screen): a held flush then
+      // ends it in the existing no_answer/deadline taxonomy with the Instance alive.
       const turnEnded = error instanceof FreebuffDriverError && error.reason === 'no_answer';
-      if (this.keepAlive && this.live === instance && !turnEnded) this.kill();
+      if (this.keepAlive && this.live === instance && !turnEnded && ack === null) this.kill();
       throw error;
     } finally {
       if (!this.keepAlive) pty.kill();
@@ -403,14 +415,32 @@ export class FreebuffDriver {
     pty.write('\r');
   }
 
-  private async awaitAck(dir: string, baseline: TurnBaseline, prompt: string, assertAlive: () => void): Promise<boolean> {
+  // Two-signal Ack (issue #34): 'store' is signal A — a chat-store line naming the
+  // prompt (answer-provenance rules untouched, ADR-0001 §2); 'screen' is signal B —
+  // the Screen crossing into the working state after submit, named through the one
+  // recognition table, never a raw literal (ADR-0002). Either signal inside the Ack
+  // window accepts the submission; null after it means nothing demonstrably started —
+  // the one re-paste / ack_missing / kill ground.
+  private async awaitAck(
+    dir: string,
+    baseline: TurnBaseline,
+    prompt: string,
+    instance: LiveInstance,
+    assertAlive: () => void,
+  ): Promise<'store' | 'screen' | null> {
+    const signal = (): 'store' | 'screen' | null => {
+      if (this.ackReceived(this.store(dir), baseline, prompt)) return 'store';
+      if (classifyScreen(instance.screen.text()).recognition.screen === 'working') return 'screen';
+      return null;
+    };
     const deadline = Date.now() + this.ackMs;
     while (Date.now() < deadline) {
       assertAlive();
-      if (this.ackReceived(this.store(dir), baseline, prompt)) return true;
+      const seen = signal();
+      if (seen !== null) return seen;
       await sleep(POLL_MS);
     }
-    return this.ackReceived(this.store(dir), baseline, prompt);
+    return signal();
   }
 
   private ackReceived(snaps: ChatDirSnapshot[], baseline: TurnBaseline, prompt: string): boolean {
